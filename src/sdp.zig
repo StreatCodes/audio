@@ -3,74 +3,135 @@ const std = @import("std");
 const DescriptionError = error{
     UnexpectedField,
     InvalidField,
-};
-
-const Field = struct {
-    key: u8,
-    required: bool,
-    multi: bool,
-};
-
-const session_descriptions = [_]Field{
-    .{ .key = 'v', .required = true, .multi = false }, //protocol version
-    .{ .key = 'o', .required = true, .multi = false }, //originator and session identifier
-    .{ .key = 's', .required = true, .multi = false }, //session name
-    .{ .key = 'i', .required = false, .multi = false }, //session information
-    .{ .key = 'u', .required = false, .multi = false }, //URI of description
-    .{ .key = 'e', .required = false, .multi = false }, //email address
-    .{ .key = 'p', .required = false, .multi = false }, //phone number
-    .{ .key = 'c', .required = false, .multi = false }, //connection information - not required if included in all media
-    .{ .key = 'b', .required = false, .multi = true }, //zero or more bandwidth information lines
-    //One or more time descriptions
-    .{ .key = 'z', .required = false, .multi = false }, //time zone adjustments
-    .{ .key = 'k', .required = false, .multi = false }, //encryption key
-    .{ .key = 'a', .required = false, .multi = true }, //zero or more session attribute lines
-    //Zero or more media descriptions
-};
-
-const time_descriptions = [_]Field{
-    .{ .key = 't', .required = true, .multi = false }, //time the session is active
-    .{ .key = 'r', .required = false, .multi = true }, //zero or more repeat times
-};
-
-const media_descriptions = [_]Field{
-    .{ .key = 'm', .required = true, .multi = false }, //media name and transport address
-    .{ .key = 'i', .required = false, .multi = false }, //media title
-    .{ .key = 'c', .required = false, .multi = false }, //connection information - optional if included at session level
-    .{ .key = 'b', .required = false, .multi = true }, //zero or more bandwidth information lines
-    .{ .key = 'k', .required = false, .multi = false }, //encryption key
-    .{ .key = 'a', .required = false, .multi = true }, //zero or more media attribute lines
+    InvalidVersion,
+    InvalidOrigin,
 };
 
 pub const SDP = struct {
     version: []const u8,
+    origin: Origin,
+    name: []const u8,
+    information: ?[]const u8,
+    uri: ?std.Uri,
+    email: ?[]const u8,
+    phone: ?[]const u8,
+    connectionInfo: ?ConnectionInfo,
 };
 
-pub fn parse(allocator: *std.mem.Allocator, description: []const u8) DescriptionError!SDP {
+pub fn parse(allocator: *std.mem.Allocator, description: []const u8) !SDP {
     _ = allocator;
     var sdp: SDP = undefined;
     var lines = std.mem.splitScalar(u8, description, '\n');
     var expected_field: []const u8 = "v";
     while (lines.next()) |line| {
-        switch (line[0]) {
+        const field = line[0];
+        if (std.mem.indexOfScalar(u8, expected_field, field) == null) {
+            std.debug.print("Expected {s} got {c}\n", .{ expected_field, field });
+            return DescriptionError.UnexpectedField;
+        }
+        if (line.len < 3 or line[1] != '=') return DescriptionError.InvalidField;
+
+        switch (field) {
             'v' => {
-                if (std.mem.indexOfScalar(u8, expected_field, 'v') == null) {
-                    return DescriptionError.UnexpectedField;
-                }
                 sdp.version = try parseVersion(line);
                 expected_field = "o";
             },
-            else => {},
+            'o' => {
+                sdp.origin = try parseOrigin(line);
+                expected_field = "s";
+            },
+            's' => {
+                sdp.name = parseName(line);
+                expected_field = "iuepcbt";
+            },
+            'i' => {
+                sdp.information = parseInformation(line);
+                expected_field = "uepcbt";
+            },
+            'u' => {
+                sdp.uri = try parseUri(line);
+                expected_field = "epcbt";
+            },
+            'e' => {
+                sdp.email = parseEmail(line);
+                expected_field = "pcbt";
+            },
+            'p' => {
+                sdp.phone = parsePhone(line);
+                expected_field = "cbt";
+            },
+            'c' => {
+                sdp.connectionInfo = parseConnectionInfo(line);
+                expected_field = "bt";
+            },
+            else => return DescriptionError.UnexpectedField,
         }
     }
 
     return sdp;
 }
 
-fn parseVersion(version_line: []const u8) DescriptionError![]const u8 {
-    if (!std.mem.eql(u8, version_line, "v=0")) return DescriptionError.InvalidField;
-    return version_line[2..];
+fn parseVersion(line: []const u8) DescriptionError![]const u8 {
+    if (!std.mem.eql(u8, line, "v=0")) return DescriptionError.InvalidVersion;
+    return line[2..];
 }
+
+const Origin = struct {
+    username: []const u8,
+    session_id: u32,
+    session_version: u32,
+    address: std.net.Address,
+};
+
+// o=jdoe 2890844526 2890842807 IN IP4 10.47.16.5
+// o=<username> <sess-id> <sess-version> <nettype> <addrtype> <unicast-address>
+fn parseOrigin(line: []const u8) !Origin {
+    var origin: Origin = undefined;
+    var origin_tokens = std.mem.splitScalar(u8, line[2..], ' ');
+
+    origin.username = origin_tokens.next() orelse return DescriptionError.InvalidOrigin;
+    const session_id = origin_tokens.next() orelse return DescriptionError.InvalidOrigin;
+    origin.session_id = try std.fmt.parseInt(u32, session_id, 10);
+    const session_version = origin_tokens.next() orelse return DescriptionError.InvalidOrigin;
+    origin.session_version = try std.fmt.parseInt(u32, session_version, 10);
+
+    const net_type = origin_tokens.next() orelse return DescriptionError.InvalidOrigin;
+    if (!std.mem.eql(u8, net_type, "IN")) return DescriptionError.InvalidOrigin;
+
+    const address_type = origin_tokens.next() orelse return DescriptionError.InvalidOrigin;
+    const address = origin_tokens.next() orelse return DescriptionError.InvalidOrigin;
+    if (std.mem.eql(u8, address_type, "IP4")) {
+        origin.address = try std.net.Address.parseIp4(address, 0);
+    } else if (std.mem.eql(u8, address_type, "IP6")) {
+        origin.address = try std.net.Address.parseIp6(address, 0);
+    } else return DescriptionError.InvalidOrigin;
+
+    return origin;
+}
+
+fn parseName(line: []const u8) []const u8 {
+    return line[2..];
+}
+
+fn parseInformation(line: []const u8) []const u8 {
+    return line[2..];
+}
+
+fn parseUri(line: []const u8) DescriptionError![]const u8 {
+    return try std.Uri.parse(line[2..]);
+}
+
+fn parseEmail(line: []const u8) []const u8 {
+    return try line[2..];
+}
+
+fn parsePhone(line: []const u8) []const u8 {
+    return try line[2..];
+}
+
+const ConnectionInfo = struct {};
+
+fn parseConnectionInfo(line: []const u8) !ConnectionInfo {}
 
 test "SDP parse accepts valid session description" {
     const description =
