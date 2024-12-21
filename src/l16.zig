@@ -1,5 +1,5 @@
 const std = @import("std");
-const rtp = @import("./root.zig");
+const rtp = @import("./rtp.zig");
 
 pub const RTP_L16 = struct {
     session: rtp.Session,
