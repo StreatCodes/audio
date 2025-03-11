@@ -51,6 +51,13 @@ pub const Header = struct {
             }
         }
     }
+
+    pub fn clone(self: Header) !Header {
+        return Header{
+            .value = self.value,
+            .parameters = try self.parameters.clone(),
+        };
+    }
 };
 
 //TODO Status should really be an enum

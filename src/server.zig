@@ -7,7 +7,15 @@ const net = std.net;
 const sip = @import("./sip.zig");
 
 //TODO
-//Get next message from replying to register message with real response
+//learn how to correctly handle REGISTER requests, probably need a session, something like this
+
+// const Session = struct {
+//     remote_addr: []const u8,
+//     branch: []const u8,
+//     user: []const u8, //TODO we need to define a struct for this
+//     user_tag: []const u8, // put in the above?
+//     call_id: []const u8,
+// }
 
 const UDP_MAX_PAYLOAD = 65507;
 
@@ -29,48 +37,54 @@ pub fn startServer(allocator: mem.Allocator) !void {
     var client_addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
     while (true) {
         const recv_bytes = try posix.recvfrom(sockfd, buf, 0, &client_addr, &client_addr_len);
-        const message = buf[0..recv_bytes];
+        const message = std.mem.trimLeft(u8, buf[0..recv_bytes], "\r\n");
+        if (message.len == 0) {
+            debug.print("Empty messaage, skipping\n", .{});
+            continue;
+        }
 
-        var request = try sip.Request.parse(allocator, message);
+        debug.print("Recieved request from {s}\n{s}", .{ client_addr.data, message });
+
+        var request = sip.Message.init(allocator, .request);
+        try request.parse(message);
         defer request.deinit();
 
-        debug.print("Recieved {s} request from {s}\n{s}", .{ request.method.toString(), client_addr.data, message });
-
-        var response = sip.Response.init(allocator);
+        var response = sip.Message.init(allocator, .response);
         defer response.deinit();
-        switch (request.method) {
+        switch (request.method.?) {
             .register => try handleRegister(allocator, request, &response),
             else => debug.print("Unknown message:\n{s}\n", .{message}),
         }
 
-        const response_message = try response.encode();
-        const send_bytes = try posix.sendto(sockfd, response_message, 0, &client_addr, client_addr_len);
-        debug.print("Responded with {d} bytes\n{s}", .{ send_bytes, response_message });
+        var response_builder = std.ArrayList(u8).init(allocator);
+        defer response_builder.deinit();
+        const writer = response_builder.writer();
+
+        try response.encode(writer);
+        const send_bytes = try posix.sendto(sockfd, response_builder.items, 0, &client_addr, client_addr_len);
+        debug.print("Responded with {d} bytes\n{s}", .{ send_bytes, response_builder.items });
     }
 }
 
-fn handleRegister(allocator: mem.Allocator, request: sip.Request, response: *sip.Response) !void {
-    response.statusCode = 200;
+fn handleRegister(allocator: mem.Allocator, request: sip.Message, response: *sip.Message) !void {
+    response.status = 200;
 
-    const via_header = request.headers.get("Via") orelse return sip.SIPError.InvalidRequest;
-    const from_header = request.headers.get("From") orelse return sip.SIPError.InvalidRequest;
-    const to_header = request.headers.get("To") orelse return sip.SIPError.InvalidRequest;
-    const call_id_header = request.headers.get("Call-ID") orelse return sip.SIPError.InvalidRequest;
-    const cseq_header = request.headers.get("CSeq") orelse return sip.SIPError.InvalidRequest;
-    const contact_header = request.headers.get("Contact") orelse return sip.SIPError.InvalidRequest;
+    const via_header = try request.headers.get("Via").?.clone();
+    var to_header = try request.headers.get("To").?.clone();
+    const from_header = try request.headers.get("From").?.clone();
+    const call_id_header = try request.headers.get("Call-ID").?.clone();
+    const cseq_header = try request.headers.get("CSeq").?.clone();
+    var contact_header = try request.headers.get("Contact").?.clone();
 
-    var to = try sip.Header.parse(allocator, to_header.value);
-    try to.parameters.put("tag", "random-value-todo");
+    try to_header.parameters.put("tag", "random-value-todo");
+    try contact_header.parameters.put("expires", "300");
 
-    var contact = try sip.Header.parse(allocator, contact_header.value);
-    try contact.parameters.put("expires", "300");
-
-    try response.headers.put("Via", try sip.Header.parse(allocator, via_header.value)); //rport needs to be filled
-    try response.headers.put("To", to);
-    try response.headers.put("From", try sip.Header.parse(allocator, from_header.value));
-    try response.headers.put("Call-ID", try sip.Header.parse(allocator, call_id_header.value));
-    try response.headers.put("CSeq", try sip.Header.parse(allocator, cseq_header.value));
-    try response.headers.put("Contact", contact);
+    try response.headers.put("Via", via_header); //rport needs to be filled
+    try response.headers.put("To", to_header);
+    try response.headers.put("From", from_header);
+    try response.headers.put("Call-ID", call_id_header);
+    try response.headers.put("CSeq", cseq_header);
+    try response.headers.put("Contact", contact_header);
     try response.headers.put("Date", try sip.Header.parse(allocator, "Sun, 09 Mar 2025 12:00:00 GMT")); //TODO calculate from time
     try response.headers.put("Server", try sip.Header.parse(allocator, "StreatsSIP/0.1"));
     try response.headers.put("Content-Length", try sip.Header.parse(allocator, "0")); //TODO calculate from body
