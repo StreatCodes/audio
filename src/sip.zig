@@ -1,9 +1,10 @@
 const std = @import("std");
 const debug = std.debug;
 const mem = std.mem;
+const fmt = std.fmt;
 
 pub const SIPError = error{
-    InvalidRequest,
+    InvalidMessage,
     InvalidMethod,
     InvalidHeader,
     InvalidStatusCode,
@@ -58,81 +59,12 @@ pub const Header = struct {
 
 const Headers = std.array_hash_map.StringArrayHashMap(Header);
 
-fn parseHeaders(allocator: mem.Allocator, lines: *std.mem.SplitIterator(u8, .sequence)) !Headers {
-    var headers = Headers.init(allocator);
-
-    while (lines.next()) |line| {
-        if (std.mem.eql(u8, line, "")) break;
-
-        const splitIndex = std.mem.indexOfScalar(u8, line, ':') orelse return SIPError.InvalidHeader;
-        const field = std.mem.trim(u8, line[0..splitIndex], " ");
-        const value = std.mem.trim(u8, line[splitIndex + 1 ..], " ");
-
-        const header = try Header.parse(allocator, value);
-
-        //TODO this needs to be getOrPut to append when duplicate headers are detected
-        //Additionally, we'll need to merge the values when duplicate headers are found
-        try headers.put(field, header);
-    }
-
-    return headers;
-}
-
 fn statusCodeToString(status_code: u32) ![]const u8 {
     switch (status_code) {
         200 => return "OK",
         else => return SIPError.InvalidStatusCode,
     }
 }
-
-pub const Response = struct {
-    allocator: mem.Allocator,
-    statusCode: u32,
-    headers: Headers,
-    body: []u8,
-
-    pub fn init(allocator: mem.Allocator) Response {
-        return Response{
-            .allocator = allocator,
-            .statusCode = 0,
-            .headers = Headers.init(allocator),
-            .body = &[_]u8{},
-        };
-    }
-
-    pub fn deinit(self: *Response) void {
-        var iter = self.headers.iterator();
-        while (iter.next()) |header| {
-            header.value_ptr.*.parameters.deinit();
-        }
-        self.headers.deinit();
-    }
-
-    pub fn encode(self: *Response) ![]const u8 {
-        var response_builder = std.ArrayList(u8).init(self.allocator);
-        const writer = response_builder.writer();
-
-        try writer.print("SIP/2.0 {d} {s}\r\n", .{ self.statusCode, try statusCodeToString(self.statusCode) });
-
-        //TODO some ordering is likely required here..
-        var header_iterator = self.headers.iterator();
-        while (header_iterator.next()) |header| {
-            const field = header.key_ptr.*;
-            const value = header.value_ptr.*;
-
-            const encoded_value = try value.encode(self.allocator);
-            defer self.allocator.free(encoded_value);
-
-            try writer.print("{s}: {s}\r\n", .{ field, encoded_value });
-        }
-
-        try writer.writeAll("\r\n");
-        try writer.writeAll(self.body);
-        //TODO do i need to write /r/n next?
-
-        return try response_builder.toOwnedSlice();
-    }
-};
 
 const Method = enum {
     register,
@@ -164,14 +96,33 @@ const Method = enum {
     }
 };
 
-pub const Request = struct {
+const MessageType = union(enum) {
+    request,
+    response,
+};
+
+pub const Message = struct {
     allocator: mem.Allocator,
-    method: Method,
-    uri: []const u8,
+    message_type: MessageType,
+    method: ?Method,
+    uri: ?[]const u8,
+    status: ?u32,
     headers: Headers,
     body: []const u8,
 
-    pub fn deinit(self: *Request) void {
+    pub fn init(allocator: mem.Allocator, message_type: MessageType) Message {
+        return Message{
+            .allocator = allocator,
+            .message_type = message_type,
+            .method = null,
+            .uri = null,
+            .status = null,
+            .headers = Headers.init(allocator),
+            .body = &[_]u8{},
+        };
+    }
+
+    pub fn deinit(self: *Message) void {
         var iter = self.headers.iterator();
         while (iter.next()) |header| {
             header.value_ptr.*.parameters.deinit();
@@ -179,26 +130,71 @@ pub const Request = struct {
         self.headers.deinit();
     }
 
-    pub fn parse(allocator: mem.Allocator, message: []const u8) !Request {
-        var request: Request = undefined;
-        request.allocator = allocator;
-
-        var lines = std.mem.splitSequence(u8, message, "\r\n");
-        const first_line = lines.next() orelse return SIPError.InvalidRequest;
+    pub fn parse(self: *Message, message_text: []const u8) !void {
+        var lines = std.mem.splitSequence(u8, message_text, "\r\n");
+        const first_line = lines.next() orelse return SIPError.InvalidMessage;
 
         var first_line_values = std.mem.splitScalar(u8, first_line, ' ');
 
-        const method = first_line_values.next() orelse return SIPError.InvalidRequest;
-        const uri = first_line_values.next() orelse return SIPError.InvalidRequest;
-        const version = first_line_values.next() orelse return SIPError.InvalidRequest;
+        //Parse the first line
+        switch (self.message_type) {
+            .request => {
+                const method = first_line_values.next() orelse return SIPError.InvalidMessage;
+                const uri = first_line_values.next() orelse return SIPError.InvalidMessage;
+                const version = first_line_values.next() orelse return SIPError.InvalidMessage;
 
-        request.method = try Method.fromString(method);
-        request.uri = uri;
-        if (!std.mem.eql(u8, version, "SIP/2.0")) return SIPError.InvalidRequest;
+                self.method = try Method.fromString(method);
+                self.uri = uri;
+                if (!std.mem.eql(u8, version, "SIP/2.0")) return SIPError.InvalidMessage;
+            },
+            .response => {
+                const version = first_line_values.next() orelse return SIPError.InvalidMessage;
+                const status_code = first_line_values.next() orelse return SIPError.InvalidMessage;
+                // const status_text = first_line_values.next() orelse return SIPError.InvalidMessage;
 
-        request.headers = try parseHeaders(allocator, &lines);
-        request.body = lines.rest();
-        return request;
+                if (!std.mem.eql(u8, version, "SIP/2.0")) return SIPError.InvalidMessage;
+                self.status = try fmt.parseInt(u32, status_code, 10);
+            },
+        }
+
+        //Parse the headers
+        while (lines.next()) |line| {
+            if (std.mem.eql(u8, line, "")) break;
+
+            const splitIndex = std.mem.indexOfScalar(u8, line, ':') orelse return SIPError.InvalidHeader;
+            const field = std.mem.trim(u8, line[0..splitIndex], " ");
+            const value = std.mem.trim(u8, line[splitIndex + 1 ..], " ");
+
+            const header = try Header.parse(self.allocator, value);
+
+            //TODO this needs to be getOrPut to append when duplicate headers are detected
+            //Additionally, we'll need to merge the values when duplicate headers are found
+            try self.headers.put(field, header);
+        }
+
+        self.body = lines.rest();
+    }
+
+    //TODO change this to accept writer
+    pub fn encode(self: *Message, writer: anytype) !void {
+        //TODO validation and handle request
+        try writer.print("SIP/2.0 {d} {s}\r\n", .{ self.status.?, try statusCodeToString(self.status.?) });
+
+        //TODO some ordering is likely required here..
+        var header_iterator = self.headers.iterator();
+        while (header_iterator.next()) |header| {
+            const field = header.key_ptr.*;
+            const value = header.value_ptr.*;
+
+            const encoded_value = try value.encode(self.allocator);
+            defer self.allocator.free(encoded_value);
+
+            try writer.print("{s}: {s}\r\n", .{ field, encoded_value });
+        }
+
+        try writer.writeAll("\r\n");
+        try writer.writeAll(self.body);
+        //TODO do i need to write /r/n next?
     }
 };
 
@@ -217,35 +213,40 @@ test "sip can correctly parse a SIP REGISTER message" {
         "Content-Length:  0\r\n" ++
         "\r\n";
 
-    var allocator = std.testing.allocator;
-    var request = try Request.parse(&allocator, message);
+    const allocator = std.testing.allocator;
+    var request = Message.init(allocator, .request);
     defer request.deinit();
 
+    try request.parse(message);
+
     try std.testing.expect(request.method == .register);
-    try std.testing.expect(std.mem.eql(u8, request.uri, "sip:localhost"));
+    try std.testing.expect(std.mem.eql(u8, request.uri.?, "sip:localhost"));
     try std.testing.expect(std.mem.eql(u8, request.body, ""));
 }
 
 //TODO this test is brittle
 test "Requests are correctly generated" {
-    var allocator = std.testing.allocator;
-    var response = Response.init(&allocator);
+    const allocator = std.testing.allocator;
+    var response = Message.init(allocator, .response);
     defer response.deinit();
 
-    response.statusCode = 200;
+    response.status = 200;
 
-    try response.headers.put("Via", try Header.parse(&allocator, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds;received=192.168.1.100"));
-    try response.headers.put("To", try Header.parse(&allocator, "<sip:user@example.com>;tag=server-tag"));
-    try response.headers.put("From", try Header.parse(&allocator, "<sip:user@example.com>;tag=123456"));
-    try response.headers.put("Call-ID", try Header.parse(&allocator, "1234567890abcdef@192.168.1.100"));
-    try response.headers.put("CSeq", try Header.parse(&allocator, "1 REGISTER"));
-    try response.headers.put("Contact", try Header.parse(&allocator, "<sip:user@192.168.1.100:5060>;expires=3600"));
-    try response.headers.put("Date", try Header.parse(&allocator, "Sat, 08 Mar 2025 12:00:00 GMT"));
-    try response.headers.put("Server", try Header.parse(&allocator, "StreatsSIP/0.1"));
-    try response.headers.put("Content-Length", try Header.parse(&allocator, "0"));
+    try response.headers.put("Via", try Header.parse(allocator, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds;received=192.168.1.100"));
+    try response.headers.put("To", try Header.parse(allocator, "<sip:user@example.com>;tag=server-tag"));
+    try response.headers.put("From", try Header.parse(allocator, "<sip:user@example.com>;tag=123456"));
+    try response.headers.put("Call-ID", try Header.parse(allocator, "1234567890abcdef@192.168.1.100"));
+    try response.headers.put("CSeq", try Header.parse(allocator, "1 REGISTER"));
+    try response.headers.put("Contact", try Header.parse(allocator, "<sip:user@192.168.1.100:5060>;expires=3600"));
+    try response.headers.put("Date", try Header.parse(allocator, "Sat, 08 Mar 2025 12:00:00 GMT"));
+    try response.headers.put("Server", try Header.parse(allocator, "StreatsSIP/0.1"));
+    try response.headers.put("Content-Length", try Header.parse(allocator, "0"));
 
-    const message = try response.encode();
-    defer allocator.free(message);
+    var message_builder = std.ArrayList(u8).init(allocator);
+    defer message_builder.deinit();
+    const writer = message_builder.writer();
+
+    try response.encode(writer);
 
     const expected_message = "SIP/2.0 200 OK\r\n" ++
         "Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds;received=192.168.1.100\r\n" ++
@@ -259,5 +260,5 @@ test "Requests are correctly generated" {
         "Content-Length: 0\r\n" ++
         "\r\n";
 
-    try std.testing.expect(std.mem.eql(u8, message, expected_message));
+    try std.testing.expect(std.mem.eql(u8, message_builder.items, expected_message));
 }
