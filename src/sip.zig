@@ -10,8 +10,9 @@ pub const SIPError = error{
     InvalidStatusCode,
 };
 
-const HeaderParamters = std.array_hash_map.StringArrayHashMap([]const u8);
 pub const Header = struct {
+    const HeaderParamters = std.array_hash_map.StringArrayHashMap([]const u8);
+
     value: []const u8,
     parameters: HeaderParamters,
 
@@ -35,10 +36,7 @@ pub const Header = struct {
         return header;
     }
 
-    pub fn encode(self: Header, allocator: mem.Allocator) ![]const u8 {
-        var parameter_builder = std.ArrayList(u8).init(allocator);
-        const writer = parameter_builder.writer();
-
+    pub fn encode(self: Header, writer: anytype) !void {
         try writer.writeAll(self.value);
 
         var iter = self.parameters.iterator();
@@ -52,13 +50,10 @@ pub const Header = struct {
                 try writer.print("={s}", .{value});
             }
         }
-
-        return parameter_builder.toOwnedSlice();
     }
 };
 
-const Headers = std.array_hash_map.StringArrayHashMap(Header);
-
+//TODO Status should really be an enum
 fn statusCodeToString(status_code: u32) ![]const u8 {
     switch (status_code) {
         200 => return "OK",
@@ -102,6 +97,8 @@ const MessageType = union(enum) {
 };
 
 pub const Message = struct {
+    const Headers = std.array_hash_map.StringArrayHashMap(Header);
+
     allocator: mem.Allocator,
     message_type: MessageType,
     method: ?Method,
@@ -175,9 +172,8 @@ pub const Message = struct {
         self.body = lines.rest();
     }
 
-    //TODO change this to accept writer
     pub fn encode(self: *Message, writer: anytype) !void {
-        //TODO validation and handle request
+        //TODO validation and handle MessageType.request
         try writer.print("SIP/2.0 {d} {s}\r\n", .{ self.status.?, try statusCodeToString(self.status.?) });
 
         //TODO some ordering is likely required here..
@@ -186,10 +182,9 @@ pub const Message = struct {
             const field = header.key_ptr.*;
             const value = header.value_ptr.*;
 
-            const encoded_value = try value.encode(self.allocator);
-            defer self.allocator.free(encoded_value);
-
-            try writer.print("{s}: {s}\r\n", .{ field, encoded_value });
+            try writer.print("{s}: ", .{field});
+            try value.encode(writer);
+            try writer.writeAll("\r\n");
         }
 
         try writer.writeAll("\r\n");
