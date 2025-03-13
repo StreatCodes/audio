@@ -11,10 +11,10 @@ pub const SIPError = error{
 };
 
 pub const Header = struct {
-    const HeaderParamters = std.array_hash_map.StringArrayHashMap([]const u8);
+    const HeaderParameters = std.array_hash_map.StringArrayHashMap([]const u8);
 
     value: []const u8,
-    parameters: HeaderParamters,
+    parameters: HeaderParameters,
 
     //TODO we should trim these values
     pub fn parse(allocator: mem.Allocator, header_text: []const u8) !Header {
@@ -22,7 +22,7 @@ pub const Header = struct {
 
         var tokens = mem.tokenizeScalar(u8, header_text, ';');
         header.value = tokens.next() orelse return SIPError.InvalidHeader;
-        header.parameters = HeaderParamters.init(allocator);
+        header.parameters = HeaderParameters.init(allocator);
 
         while (tokens.next()) |token| {
             var param_tokens = mem.splitScalar(u8, token, '=');
@@ -68,32 +68,56 @@ fn statusCodeToString(status_code: u32) ![]const u8 {
     }
 }
 
-const Method = enum {
-    register,
+pub const Method = enum {
     invite,
     ack,
-    cancel,
-    bye,
     options,
+    bye,
+    cancel,
+    register,
+    subscribe,
+    notify,
+    publish,
+    info,
+    refer,
+    message,
+    update,
+    prack,
 
     pub fn fromString(method: []const u8) !Method {
-        if (std.mem.eql(u8, method, "REGISTER")) return Method.register;
         if (std.mem.eql(u8, method, "INVITE")) return Method.invite;
         if (std.mem.eql(u8, method, "ACK")) return Method.ack;
-        if (std.mem.eql(u8, method, "CANCEL")) return Method.cancel;
-        if (std.mem.eql(u8, method, "BYE")) return Method.bye;
         if (std.mem.eql(u8, method, "OPTIONS")) return Method.options;
+        if (std.mem.eql(u8, method, "BYE")) return Method.bye;
+        if (std.mem.eql(u8, method, "CANCEL")) return Method.cancel;
+        if (std.mem.eql(u8, method, "REGISTER")) return Method.register;
+        if (std.mem.eql(u8, method, "SUBSCRIBE")) return Method.subscribe;
+        if (std.mem.eql(u8, method, "NOTIFY")) return Method.notify;
+        if (std.mem.eql(u8, method, "PUBLISH")) return Method.publish;
+        if (std.mem.eql(u8, method, "INFO")) return Method.info;
+        if (std.mem.eql(u8, method, "REFER")) return Method.refer;
+        if (std.mem.eql(u8, method, "MESSAGE")) return Method.message;
+        if (std.mem.eql(u8, method, "UPDATE")) return Method.update;
+        if (std.mem.eql(u8, method, "PRACK")) return Method.prack;
         return SIPError.InvalidMethod;
     }
 
     pub fn toString(self: Method) []const u8 {
         switch (self) {
-            .register => return "REGISTER",
             .invite => return "INVITE",
             .ack => return "ACK",
-            .cancel => return "CANCEL",
-            .bye => return "BYE",
             .options => return "OPTIONS",
+            .bye => return "BYE",
+            .cancel => return "CANCEL",
+            .register => return "REGISTER",
+            .subscribe => return "SUBSCRIBE",
+            .notify => return "NOTIFY",
+            .publish => return "PUBLISH",
+            .info => return "INFO",
+            .refer => return "REFER",
+            .message => return "MESSAGE",
+            .update => return "UPDATE",
+            .prack => return "PRACK",
         }
     }
 };

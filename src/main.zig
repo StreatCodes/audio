@@ -5,7 +5,7 @@ const server = @import("./server.zig");
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
-    try server.startServer(allocator);
+    try server.startServer(allocator, "0.0.0.0", 5060);
 
     // var dir = std.fs.cwd();
     // const file_name = "./wars.wav";

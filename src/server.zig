@@ -7,53 +7,63 @@ const net = std.net;
 const sip = @import("./sip.zig");
 
 //TODO
-//learn how to correctly handle REGISTER requests, probably need a session, something like this
+//Collect all the information we need from client REGISTER requests
 
-// const Session = struct {
-//     remote_addr: []const u8,
-//     branch: []const u8,
-//     user: []const u8, //TODO we need to define a struct for this
-//     user_tag: []const u8, // put in the above?
-//     call_id: []const u8,
-// }
-
+const Sessions = std.StringHashMap(Session);
 const UDP_MAX_PAYLOAD = 65507;
 
-pub fn startServer(allocator: mem.Allocator) !void {
-    const port = 5060;
-    const ip4_addr = "0.0.0.0";
-
+pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_port: u16) !void {
     var buf = try allocator.alloc(u8, UDP_MAX_PAYLOAD);
     defer allocator.free(buf);
 
-    const sockfd = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM | posix.SOCK.CLOEXEC, 0);
-    defer posix.close(sockfd);
+    const socket = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM | posix.SOCK.CLOEXEC, 0);
+    defer posix.close(socket);
 
-    const addr = try net.Address.resolveIp(ip4_addr, port);
-    try posix.bind(sockfd, &addr.any, addr.getOsSockLen());
-    debug.print("Listening {s}:{d}\n", .{ ip4_addr, port });
+    const address = try net.Address.resolveIp(listen_address, listen_port);
+    try posix.bind(socket, &address.any, address.getOsSockLen());
+    debug.print("Listening {s}:{d}\n", .{ listen_address, listen_port });
 
-    var client_addr: posix.sockaddr = undefined;
-    var client_addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
+    var sessions = Sessions.init(allocator);
+    defer sessions.deinit();
+
+    //Wait for incoming datagrams and process them
     while (true) {
-        const recv_bytes = try posix.recvfrom(sockfd, buf, 0, &client_addr, &client_addr_len);
+        var client_addr: posix.sockaddr = undefined;
+        var client_addr_len: posix.socklen_t = undefined;
+        const recv_bytes = try posix.recvfrom(socket, buf, 0, &client_addr, &client_addr_len);
+
+        //Per the spec we need to trim any leading line breaks
         const message = std.mem.trimLeft(u8, buf[0..recv_bytes], "\r\n");
+
+        //Clients often send empty messages (\r\n) for keep alives, ignore them
         if (message.len == 0) {
-            debug.print("Empty messaage, skipping\n", .{});
+            debug.print("Empty message, skipping\n", .{});
             continue;
         }
-
-        debug.print("Recieved request from {s}\n{s}", .{ client_addr.data, message });
 
         var request = sip.Message.init(allocator, .request);
         try request.parse(message);
         defer request.deinit();
 
+        const remote_address = try getAddressAndPort(allocator, client_addr);
         var response = sip.Message.init(allocator, .response);
         defer response.deinit();
-        switch (request.method.?) {
-            .register => try handleRegister(allocator, request, &response),
-            else => debug.print("Unknown message:\n{s}\n", .{message}),
+
+        if (sessions.getPtr(remote_address)) |session| {
+            //Handle messages for existing sessions
+            switch (request.method.?) {
+                .register => try session.handleRegister(allocator, request, &response),
+                else => debug.print("Unknown message:\n{s}\n", .{message}),
+            }
+        } else {
+            //No session found for remote address, create one
+            if (request.method.? != .register) {
+                debug.print("First message must be REGISTER\n", .{});
+                continue;
+            }
+
+            const session = try Session.fromRegister(allocator, request, &response);
+            try sessions.put(remote_address, session);
         }
 
         var response_builder = std.ArrayList(u8).init(allocator);
@@ -61,34 +71,75 @@ pub fn startServer(allocator: mem.Allocator) !void {
         const writer = response_builder.writer();
 
         try response.encode(writer);
-        const send_bytes = try posix.sendto(sockfd, response_builder.items, 0, &client_addr, client_addr_len);
-        debug.print("Responded with {d} bytes\n{s}", .{ send_bytes, response_builder.items });
+        _ = try posix.sendto(socket, response_builder.items, 0, &client_addr, client_addr_len);
     }
 }
 
-fn handleRegister(allocator: mem.Allocator, request: sip.Message, response: *sip.Message) !void {
-    response.status = 200;
+pub fn getAddressAndPort(allocator: mem.Allocator, addr: posix.sockaddr) ![]const u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    const writer = buffer.writer();
 
-    const via_header = try request.headers.get("Via").?.clone();
-    var to_header = try request.headers.get("To").?.clone();
-    const from_header = try request.headers.get("From").?.clone();
-    const call_id_header = try request.headers.get("Call-ID").?.clone();
-    const cseq_header = try request.headers.get("CSeq").?.clone();
-    var contact_header = try request.headers.get("Contact").?.clone();
+    const address = net.Address.initPosix(@alignCast(&addr));
+    try address.format("", .{}, writer);
 
-    try to_header.parameters.put("tag", "random-value-todo");
-    try contact_header.parameters.put("expires", "300");
-
-    try response.headers.put("Via", via_header); //rport needs to be filled
-    try response.headers.put("To", to_header);
-    try response.headers.put("From", from_header);
-    try response.headers.put("Call-ID", call_id_header);
-    try response.headers.put("CSeq", cseq_header);
-    try response.headers.put("Contact", contact_header);
-    try response.headers.put("Date", try sip.Header.parse(allocator, "Sun, 09 Mar 2025 12:00:00 GMT")); //TODO calculate from time
-    try response.headers.put("Server", try sip.Header.parse(allocator, "StreatsSIP/0.1"));
-    try response.headers.put("Content-Length", try sip.Header.parse(allocator, "0")); //TODO calculate from body
+    return buffer.toOwnedSlice();
 }
+
+const Protocol = enum {
+    sip,
+};
+
+const Contact = struct {
+    name: []const u8, //Readable name
+    protocol: Protocol,
+    user: []const u8,
+    address: net.Address,
+};
+
+const Session = struct {
+    sequence: u32,
+    expires: u32,
+    contact: Contact,
+    call_id: []const u8,
+    supported_methods: []sip.Method,
+
+    fn fromRegister(allocator: mem.Allocator, request: sip.Message, response: *sip.Message) !Session {
+        debug.print("REGISTER - New session\n", .{});
+        var session: Session = undefined;
+        session.sequence = 1337;
+
+        const via_header = try request.headers.get("Via").?.clone();
+        var to_header = try request.headers.get("To").?.clone();
+        const from_header = try request.headers.get("From").?.clone();
+        const call_id_header = try request.headers.get("Call-ID").?.clone();
+        const cseq_header = try request.headers.get("CSeq").?.clone();
+        var contact_header = try request.headers.get("Contact").?.clone();
+
+        try to_header.parameters.put("tag", "random-value-todo");
+        try contact_header.parameters.put("expires", "300");
+
+        try response.headers.put("Via", via_header); //rport needs to be filled
+        try response.headers.put("To", to_header);
+        try response.headers.put("From", from_header);
+        try response.headers.put("Call-ID", call_id_header);
+        try response.headers.put("CSeq", cseq_header);
+        try response.headers.put("Contact", contact_header);
+        try response.headers.put("Date", try sip.Header.parse(allocator, "Sun, 09 Mar 2025 12:00:00 GMT")); //TODO calculate from time
+        try response.headers.put("Server", try sip.Header.parse(allocator, "StreatsSIP/0.1"));
+        try response.headers.put("Content-Length", try sip.Header.parse(allocator, "0")); //TODO calculate from body
+        response.status = 200;
+
+        return session;
+    }
+
+    fn handleRegister(self: *Session, allocator: mem.Allocator, request: sip.Message, response: *sip.Message) !void {
+        debug.print("REGISTER - Refreshing session\n", .{});
+        _ = self;
+        _ = allocator;
+        _ = request;
+        _ = response;
+    }
+};
 
 //RECEIVED
 // REGISTER sip:localhost SIP/2.0
