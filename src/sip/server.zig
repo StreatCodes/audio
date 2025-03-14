@@ -4,7 +4,8 @@ const posix = std.posix;
 const mem = std.mem;
 const debug = std.debug;
 const net = std.net;
-const sip = @import("./sip.zig");
+const response = @import("./response.zig");
+const headers = @import("./headers.zig");
 
 //TODO
 //Collect all the information we need from client REGISTER requests
@@ -41,18 +42,18 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
             continue;
         }
 
-        var request = sip.Message.init(allocator, .request);
+        var request = response.Message.init(allocator, .request);
         try request.parse(message);
         defer request.deinit();
 
         const remote_address = try getAddressAndPort(allocator, client_addr);
-        var response = sip.Message.init(allocator, .response);
-        defer response.deinit();
+        var res = response.Message.init(allocator, .response);
+        defer res.deinit();
 
         if (sessions.getPtr(remote_address)) |session| {
             //Handle messages for existing sessions
             switch (request.method.?) {
-                .register => try session.handleRegister(allocator, request, &response),
+                .register => try session.handleRegister(allocator, request, &res),
                 else => debug.print("Unknown message:\n{s}\n", .{message}),
             }
         } else {
@@ -62,7 +63,7 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
                 continue;
             }
 
-            const session = try Session.fromRegister(allocator, request, &response);
+            const session = try Session.fromRegister(allocator, request, &res);
             try sessions.put(remote_address, session);
         }
 
@@ -70,7 +71,7 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         defer response_builder.deinit();
         const writer = response_builder.writer();
 
-        try response.encode(writer);
+        try res.encode(writer);
         _ = try posix.sendto(socket, response_builder.items, 0, &client_addr, client_addr_len);
     }
 }
@@ -101,9 +102,9 @@ const Session = struct {
     expires: u32,
     contact: Contact,
     call_id: []const u8,
-    supported_methods: []sip.Method,
+    supported_methods: []headers.Method,
 
-    fn fromRegister(allocator: mem.Allocator, request: sip.Message, response: *sip.Message) !Session {
+    fn fromRegister(allocator: mem.Allocator, request: response.Message, res: *response.Message) !Session {
         debug.print("REGISTER - New session\n", .{});
         var session: Session = undefined;
         session.sequence = 1337;
@@ -118,26 +119,26 @@ const Session = struct {
         try to_header.parameters.put("tag", "random-value-todo");
         try contact_header.parameters.put("expires", "300");
 
-        try response.headers.put("Via", via_header); //rport needs to be filled
-        try response.headers.put("To", to_header);
-        try response.headers.put("From", from_header);
-        try response.headers.put("Call-ID", call_id_header);
-        try response.headers.put("CSeq", cseq_header);
-        try response.headers.put("Contact", contact_header);
-        try response.headers.put("Date", try sip.Header.parse(allocator, "Sun, 09 Mar 2025 12:00:00 GMT")); //TODO calculate from time
-        try response.headers.put("Server", try sip.Header.parse(allocator, "StreatsSIP/0.1"));
-        try response.headers.put("Content-Length", try sip.Header.parse(allocator, "0")); //TODO calculate from body
-        response.status = 200;
+        try res.headers.put("Via", via_header); //rport needs to be filled
+        try res.headers.put("To", to_header);
+        try res.headers.put("From", from_header);
+        try res.headers.put("Call-ID", call_id_header);
+        try res.headers.put("CSeq", cseq_header);
+        try res.headers.put("Contact", contact_header);
+        try res.headers.put("Date", try headers.Header.parse(allocator, "Sun, 09 Mar 2025 12:00:00 GMT")); //TODO calculate from time
+        try res.headers.put("Server", try headers.Header.parse(allocator, "StreatsSIP/0.1"));
+        try res.headers.put("Content-Length", try headers.Header.parse(allocator, "0")); //TODO calculate from body
+        res.status = 200;
 
         return session;
     }
 
-    fn handleRegister(self: *Session, allocator: mem.Allocator, request: sip.Message, response: *sip.Message) !void {
-        debug.print("REGISTER - Refreshing session\n", .{});
+    fn handleRegister(self: *Session, allocator: mem.Allocator, request: response.Message, res: *response.Message) !void {
+        debug.print("REGISTER - session update\n", .{});
         _ = self;
         _ = allocator;
         _ = request;
-        _ = response;
+        _ = res;
     }
 };
 

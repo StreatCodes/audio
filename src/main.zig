@@ -1,7 +1,7 @@
 const std = @import("std");
 const wav = @import("./wav.zig");
 const l16 = @import("./l16.zig");
-const server = @import("./server.zig");
+const server = @import("./sip/server.zig");
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
