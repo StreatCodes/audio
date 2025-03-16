@@ -7,19 +7,6 @@ const io = std.io;
 const response = @import("./response.zig");
 const SliceReader = @import("./SliceReader.zig");
 
-// REGISTER sip:localhost SIP/2.0
-// Via: SIP/2.0/UDP 192.168.1.130:54216;rport;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh
-// Max-Forwards: 70
-// From: "Streats" <sip:streats@localhost>;tag=BXQAqfzJoJqWw3c9uJS71bwCq-WuaNtW
-// To: "Streats" <sip:streats@localhost>
-// Call-ID: jOyTomQC6PHEVeOXxOyxFV8drOmzbrs7
-// CSeq: 13265 REGISTER
-// User-Agent: Telephone 1.6
-// Contact: "Streats" <sip:streats@192.168.1.130:54216;ob>
-// Expires: 300
-// Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS
-// Content-Length:  0
-
 fn getHeaderValue(header_text: []const u8) []const u8 {
     var index: usize = 0;
     var quoted = false;
@@ -33,7 +20,7 @@ fn getHeaderValue(header_text: []const u8) []const u8 {
         index += 1;
     }
 
-    return header_text[0..index];
+    return std.mem.trim(u8, header_text[0..index], " ");
 }
 
 //TODO does not handle escaped semicolons (\;)
@@ -45,11 +32,11 @@ fn getHeaderParamater(header_text: []const u8, attribute_name: []const u8) !?[]c
     const _start = std.mem.indexOf(u8, header_text, needle) orelse return null;
     const start = _start + needle.len;
 
-    const remainder = header_text[start..];
+    var remainder = header_text[start..];
     if (std.mem.indexOfScalar(u8, remainder, ';')) |end| {
-        return remainder[0..end];
+        remainder = remainder[0..end];
     }
-    return remainder;
+    return std.mem.trim(u8, remainder, " \n");
 }
 
 const ContactProtocol = enum {
@@ -75,17 +62,13 @@ pub const Contact = struct {
     host: []const u8,
     port: u16,
 
-    fn hostEnd(char: u8) bool {
-        return char == '>' or char == ':' or char == ';';
-    }
-
-    fn portEnd(char: u8) bool {
+    fn addressEnd(char: u8) bool {
         return char == '>' or char == ';';
     }
 
     /// Parses a contact in the following format
     /// ["Streats" <sip:streats@192.168.1.130:54216;ob>]
-    fn parse(contact_text: []const u8) !Contact {
+    pub fn parse(contact_text: []const u8) !Contact {
         var contact = Contact{
             .name = null,
             .protocol = undefined,
@@ -106,15 +89,35 @@ pub const Contact = struct {
         contact.protocol = try ContactProtocol.fromString(protocol);
 
         contact.user = reader.readUntilScalarExcluding('@');
-        contact.host = reader.readUntil(hostEnd);
-        contact.port = 5060; //TODO protocol.defaultPort()
-        const host_end = reader.get() orelse return response.SIPError.InvalidHeader;
-        if (host_end == ':') {
-            const port_text = reader.readUntil(portEnd);
-            contact.port = try fmt.parseInt(u16, port_text, 10);
-        }
+
+        const address_text = reader.readUntil(addressEnd);
+        const address = try Address.parse(address_text);
+        contact.host = address.host;
+        contact.port = address.port;
 
         return contact;
+    }
+};
+
+//TODO use above in Contact
+pub const Address = struct {
+    host: []const u8,
+    port: u16,
+
+    /// Parses an address in the following format
+    /// [192.168.1.130:54216]
+    pub fn parse(address_text: []const u8) !Address {
+        var reader = SliceReader.init(address_text);
+
+        const host = reader.readUntilScalarExcluding(':');
+        var port: u16 = 5060;
+        const port_text = reader.rest();
+        if (port_text.len > 0) port = try fmt.parseInt(u16, port_text, 10);
+
+        return Address{
+            .host = host,
+            .port = port,
+        };
     }
 };
 
@@ -197,7 +200,7 @@ const TransportProtocol = enum {
 
 pub const ViaHeader = struct {
     protocol: TransportProtocol,
-    address: net.Address,
+    address: Address,
     branch: []const u8, //mandatory for UDP
     rport: ?u16,
     ttl: ?u32,
@@ -205,40 +208,38 @@ pub const ViaHeader = struct {
     maddr: ?[]const u8, //multicast address
     sent_by: ?[]const u8, //sender address when using multicast
 
-    // SIP/2.0/UDP 192.168.1.130:54216;rport;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh
-    // surely this can be improved...
+    fn isWhitespace(char: u8) bool {
+        return char == ' ' or char == '\n' or char == '\t';
+    }
+
+    fn isTransport(char: u8) bool {
+        if (char >= 'A' and char <= 'Z') return true;
+        if (char >= 'a' and char <= 'z') return true;
+        if (char >= '0' and char <= '9') return true;
+        if (char == '.') return true;
+        return false;
+    }
+
+    //SIP/2.0/UDP 192.168.1.130:54216;rport;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh
     pub fn parse(header_text: []const u8) !ViaHeader {
         var via_header: ViaHeader = undefined;
-
         const header_value = getHeaderValue(header_text);
+        var reader = SliceReader.init(header_value);
 
-        //Assert we're using SIP/2.0
-        var version_iter = mem.tokenizeScalar(u8, header_value, '/');
-        const sip = version_iter.next() orelse return response.SIPError.InvalidHeader;
-        const sip_stripped = std.mem.trim(u8, sip, " ");
-        if (!mem.eql(u8, sip_stripped, "SIP")) return response.SIPError.InvalidHeader;
+        const sip = reader.readWhile(isTransport);
+        if (!mem.eql(u8, sip, "SIP")) return response.SIPError.InvalidHeader;
 
-        const version = version_iter.next() orelse return response.SIPError.InvalidHeader;
-        const version_stripped = std.mem.trim(u8, version, " ");
-        if (!mem.eql(u8, version_stripped, "2.0")) return response.SIPError.InvalidHeader;
+        _ = reader.readUntil(isTransport);
+        const version = reader.readWhile(isTransport);
+        if (!mem.eql(u8, version, "2.0")) return response.SIPError.InvalidHeader;
 
-        //get the protocol
-        const rest = version_iter.rest();
-        const rest_stripped = mem.trim(u8, rest, " ");
-        var value_iter = mem.tokenizeScalar(u8, rest_stripped, ' ');
-
-        const protocol = value_iter.next() orelse return response.SIPError.InvalidHeader;
+        _ = reader.readUntil(isTransport);
+        const protocol = reader.readWhile(isTransport);
+        if (!mem.eql(u8, protocol, "UDP")) return response.SIPError.InvalidHeader;
         via_header.protocol = try TransportProtocol.fromString(protocol);
 
-        //get the address
-        const address = value_iter.next() orelse return response.SIPError.InvalidHeader;
-        var address_iter = std.mem.tokenizeScalar(u8, address, ':');
-
-        const ip = address_iter.next() orelse return response.SIPError.InvalidHeader;
-        const port_text = address_iter.next() orelse return response.SIPError.InvalidHeader;
-        const port = try std.fmt.parseInt(u16, port_text, 10);
-
-        via_header.address = try net.Address.parseIp(ip, port);
+        const address_text = std.mem.trimLeft(u8, reader.rest(), " ");
+        via_header.address = try Address.parse(address_text);
 
         //get attributes
         const magic_cookie = "z9hG4bK";
@@ -261,18 +262,40 @@ pub const ViaHeader = struct {
     }
 };
 
+test "ViaHeader parses values into fields" {
+    const header_text = "SIP/2.0/UDP 192.168.1.130:54216;rport;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh";
+    const via = try ViaHeader.parse(header_text);
+
+    try std.testing.expect(via.protocol == .udp);
+    try std.testing.expect(std.mem.eql(u8, via.address.host, "192.168.1.130"));
+    try std.testing.expect(via.address.port == 54216);
+    try std.testing.expect(std.mem.eql(u8, via.branch, "z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh"));
+}
+
+test "ViaHeader parses with whitespace" {
+    const header_text = "SIP / 2.0 / UDP first.example.com:4000 ;ttl=16\n;maddr=224.2.0.1 ;branch=z9hG4bKa7c6a8dlze.1";
+    const via = try ViaHeader.parse(header_text);
+
+    try std.testing.expect(via.protocol == .udp);
+    try std.testing.expect(std.mem.eql(u8, via.address.host, "first.example.com"));
+    try std.testing.expect(via.address.port == 4000);
+    try std.testing.expect(via.ttl == 16);
+    try std.testing.expect(std.mem.eql(u8, via.maddr.?, "224.2.0.1"));
+    try std.testing.expect(std.mem.eql(u8, via.branch, "z9hG4bKa7c6a8dlze.1"));
+}
+
 pub const FromHeader = struct {
     contact: Contact,
     tag: ?[]const u8,
 
-    // pub fn parse(header_text: []const u8) !FromHeader {
-    //     const contact_text = getHeaderValue(header_text);
+    pub fn parse(header_text: []const u8) !FromHeader {
+        const contact_text = getHeaderValue(header_text);
 
-    //     return FromHeader{
-    //         .number = try std.fmt.parseInt(u32, number_text, 10),
-    //         .tag = try getHeaderParamater(header_text, "tag"),
-    //     };
-    // }
+        return FromHeader{
+            .contact = try Contact.parse(contact_text),
+            .tag = try getHeaderParamater(header_text, "tag"),
+        };
+    }
 };
 
 pub const ToHeader = FromHeader;
@@ -357,17 +380,6 @@ pub const Header = enum {
         }
     }
 };
-// Via: SIP/2.0/UDP 192.168.1.130:54216;rport;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh
-// Max-Forwards: 70
-// From: "Streats" <sip:streats@localhost>;tag=BXQAqfzJoJqWw3c9uJS71bwCq-WuaNtW
-// To: "Streats" <sip:streats@localhost>
-// Call-ID: jOyTomQC6PHEVeOXxOyxFV8drOmzbrs7
-// CSeq: 13265 REGISTER
-// User-Agent: Telephone 1.6
-// Contact: "Streats" <sip:streats@192.168.1.130:54216;ob>
-// Expires: 300
-// Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS
-// Content-Length:  0
 
 pub const Method = enum {
     invite,

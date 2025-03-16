@@ -9,14 +9,14 @@ const Request = @This();
 method: headers.Method,
 uri: []const u8,
 
-via: headers.ViaHeader,
+via: headers.ViaHeader, //TODO this should be a slice
 max_forwards: u32,
 from: headers.FromHeader,
 to: headers.ToHeader,
 call_id: []const u8,
 sequence: headers.Sequence,
 user_agent: ?[]const u8,
-contact: ?[]headers.Contact,
+contact: ?headers.Contact, //TODO this should be a slice
 expires: ?u32,
 allow: ?[]headers.Method,
 content_length: ?u32,
@@ -50,15 +50,16 @@ pub fn parse(allocator: mem.Allocator, message_text: []const u8) !Request {
 
         const header_field = try headers.Header.fromString(field);
 
+        //TODO some fields should actually be arrays and can either be comma seperated or multiple instances of the header
         switch (header_field) {
             .via => request.via = try headers.ViaHeader.parse(value),
             .max_forwards => request.max_forwards = try std.fmt.parseInt(u32, value, 10),
-            // from
-            // to
+            .from => request.from = try headers.FromHeader.parse(value),
+            .to => request.to = try headers.ToHeader.parse(value),
             .call_id => request.call_id = value,
             .cseq => request.sequence = try headers.Sequence.parse(value),
             .user_agent => request.user_agent = value,
-            // contact
+            .contact => request.contact = try headers.Contact.parse(value),
             .expires => request.expires = try std.fmt.parseInt(u32, value, 10),
             .allow => {
                 var iter = std.mem.tokenizeScalar(u8, value, ',');
@@ -70,7 +71,6 @@ pub fn parse(allocator: mem.Allocator, message_text: []const u8) !Request {
                 request.allow = try allow_methods.toOwnedSlice();
             },
             .content_length => request.content_length = try std.fmt.parseInt(u32, value, 10),
-            else => debug.print("Unknown header {s}: {s}\n", .{ field, value }),
         }
     }
 
@@ -83,19 +83,6 @@ pub fn deinit(self: *Request, allocator: mem.Allocator) void {
         allocator.free(allow);
     }
 }
-
-// REGISTER sip:localhost SIP/2.0
-// Via: SIP/2.0/UDP 192.168.1.130:54216;rport;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh
-// Max-Forwards: 70
-// From: "Streats" <sip:streats@localhost>;tag=BXQAqfzJoJqWw3c9uJS71bwCq-WuaNtW
-// To: "Streats" <sip:streats@localhost>
-// Call-ID: jOyTomQC6PHEVeOXxOyxFV8drOmzbrs7
-// CSeq: 13265 REGISTER
-// User-Agent: Telephone 1.6
-// Contact: "Streats" <sip:streats@192.168.1.130:54216;ob>
-// Expires: 300
-// Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS
-// Content-Length:  0
 
 test "sip can correctly parse a SIP REGISTER message" {
     const message = "REGISTER sip:localhost SIP/2.0\r\n" ++
