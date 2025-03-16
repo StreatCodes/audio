@@ -11,18 +11,73 @@ pub const SIPError = error{
     InvalidStatusCode,
 };
 
+pub const MessageType = union(enum) {
+    request,
+    response,
+};
+
+pub const Header = struct {
+    const HeaderParameters = std.array_hash_map.StringArrayHashMap([]const u8);
+
+    value: []const u8,
+    parameters: HeaderParameters,
+
+    //TODO we should trim these values
+    pub fn parse(allocator: mem.Allocator, header_text: []const u8) !Header {
+        var header: Header = undefined;
+
+        var tokens = mem.tokenizeScalar(u8, header_text, ';');
+        header.value = tokens.next() orelse return SIPError.InvalidHeader;
+        header.parameters = HeaderParameters.init(allocator);
+
+        while (tokens.next()) |token| {
+            var param_tokens = mem.splitScalar(u8, token, '=');
+            const param_field = param_tokens.next() orelse return SIPError.InvalidHeader;
+            const param_value = param_tokens.next();
+            if (param_tokens.next() != null) return SIPError.InvalidHeader;
+
+            try header.parameters.put(param_field, param_value orelse "");
+        }
+
+        return header;
+    }
+
+    pub fn encode(self: Header, writer: anytype) !void {
+        try writer.writeAll(self.value);
+
+        var iter = self.parameters.iterator();
+        while (iter.next()) |param| {
+            const field = param.key_ptr.*;
+            const value = param.value_ptr.*;
+
+            try writer.print(";{s}", .{field});
+
+            if (value.len > 0) {
+                try writer.print("={s}", .{value});
+            }
+        }
+    }
+
+    pub fn clone(self: Header) !Header {
+        return Header{
+            .value = self.value,
+            .parameters = try self.parameters.clone(),
+        };
+    }
+};
+
 pub const Message = struct {
-    const Headers = std.array_hash_map.StringArrayHashMap(headers.Header);
+    const Headers = std.array_hash_map.StringArrayHashMap(Header);
 
     allocator: mem.Allocator,
-    message_type: headers.MessageType,
+    message_type: MessageType,
     method: ?headers.Method,
     uri: ?[]const u8,
     status: ?u32,
     headers: Headers,
     body: []const u8,
 
-    pub fn init(allocator: mem.Allocator, message_type: headers.MessageType) Message {
+    pub fn init(allocator: mem.Allocator, message_type: MessageType) Message {
         return Message{
             .allocator = allocator,
             .message_type = message_type,
@@ -77,7 +132,7 @@ pub const Message = struct {
             const field = std.mem.trim(u8, line[0..splitIndex], " ");
             const value = std.mem.trim(u8, line[splitIndex + 1 ..], " ");
 
-            const header = try headers.Header.parse(self.allocator, value);
+            const header = try Header.parse(self.allocator, value);
 
             //TODO this needs to be getOrPut to append when duplicate headers are detected
             //Additionally, we'll need to merge the values when duplicate headers are found
@@ -108,28 +163,41 @@ pub const Message = struct {
     }
 };
 
-test "sip can correctly parse a SIP REGISTER message" {
-    const message = "REGISTER sip:localhost SIP/2.0\r\n" ++
-        "Via: SIP/2.0/UDP 172.20.10.4:55595;rport;branch=z9hG4bKPj97wgnQ5d7IM3cfDd2QYcYf9H8hqJLxit\r\n" ++
-        "Max-Forwards: 70\r\n" ++
-        "From: \"Streats\" <sip:streats@localhost>;tag=Z.hw-WnzbyImNj0P.WWHJW9zhtQc1lm8\r\n" ++
-        "To: \"Streats\" <sip:streats@localhost>\r\n" ++
-        "Call-ID: xGAGzEIoe5SHqQnmK5W2jWsIF7kThRbn\r\n" ++
-        "CSeq: 37838 REGISTER\r\n" ++
-        "User-Agent: Telephone 1.6\r\n" ++
-        "Contact: \"Streats\" <sip:streats@172.20.10.4:55595;ob>\r\n" ++
-        "Expires: 300\r\n" ++
-        "Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS\r\n" ++
-        "Content-Length:  0\r\n" ++
+//TODO this test is brittle
+test "Requests are correctly generated" {
+    const allocator = std.testing.allocator;
+    var res = Message.init(allocator, .response);
+    defer res.deinit();
+
+    res.status = 200;
+
+    try res.headers.put("Via", try Header.parse(allocator, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds;received=192.168.1.100"));
+    try res.headers.put("To", try Header.parse(allocator, "<sip:user@example.com>;tag=server-tag"));
+    try res.headers.put("From", try Header.parse(allocator, "<sip:user@example.com>;tag=123456"));
+    try res.headers.put("Call-ID", try Header.parse(allocator, "1234567890abcdef@192.168.1.100"));
+    try res.headers.put("CSeq", try Header.parse(allocator, "1 REGISTER"));
+    try res.headers.put("Contact", try Header.parse(allocator, "<sip:user@192.168.1.100:5060>;expires=3600"));
+    try res.headers.put("Date", try Header.parse(allocator, "Sat, 08 Mar 2025 12:00:00 GMT"));
+    try res.headers.put("Server", try Header.parse(allocator, "StreatsSIP/0.1"));
+    try res.headers.put("Content-Length", try Header.parse(allocator, "0"));
+
+    var message_builder = std.ArrayList(u8).init(allocator);
+    defer message_builder.deinit();
+    const writer = message_builder.writer();
+
+    try res.encode(writer);
+
+    const expected_message = "SIP/2.0 200 OK\r\n" ++
+        "Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds;received=192.168.1.100\r\n" ++
+        "To: <sip:user@example.com>;tag=server-tag\r\n" ++
+        "From: <sip:user@example.com>;tag=123456\r\n" ++
+        "Call-ID: 1234567890abcdef@192.168.1.100\r\n" ++
+        "CSeq: 1 REGISTER\r\n" ++
+        "Contact: <sip:user@192.168.1.100:5060>;expires=3600\r\n" ++
+        "Date: Sat, 08 Mar 2025 12:00:00 GMT\r\n" ++
+        "Server: StreatsSIP/0.1\r\n" ++
+        "Content-Length: 0\r\n" ++
         "\r\n";
 
-    const allocator = std.testing.allocator;
-    var request = Message.init(allocator, .request);
-    defer request.deinit();
-
-    try request.parse(message);
-
-    try std.testing.expect(request.method == .register);
-    try std.testing.expect(std.mem.eql(u8, request.uri.?, "sip:localhost"));
-    try std.testing.expect(std.mem.eql(u8, request.body, ""));
+    try std.testing.expect(std.mem.eql(u8, message_builder.items, expected_message));
 }

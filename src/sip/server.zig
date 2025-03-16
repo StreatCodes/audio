@@ -86,21 +86,10 @@ pub fn getAddressAndPort(allocator: mem.Allocator, addr: posix.sockaddr) ![]cons
     return buffer.toOwnedSlice();
 }
 
-const Protocol = enum {
-    sip,
-};
-
-const Contact = struct {
-    name: []const u8, //Readable name
-    protocol: Protocol,
-    user: []const u8,
-    address: net.Address,
-};
-
 const Session = struct {
     sequence: u32,
     expires: u32,
-    contact: Contact,
+    contact: headers.Contact,
     call_id: []const u8,
     supported_methods: []headers.Method,
 
