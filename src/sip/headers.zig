@@ -4,6 +4,7 @@ const mem = std.mem;
 const fmt = std.fmt;
 const net = std.net;
 const io = std.io;
+const testing = std.testing;
 const response = @import("./response.zig");
 const SliceReader = @import("./SliceReader.zig");
 
@@ -55,12 +56,13 @@ const ContactProtocol = enum {
     }
 };
 
+//TODO contacts can include parameters too
 pub const Contact = struct {
-    name: ?[]const u8, //Readable name
+    name: ?[]const u8 = null, //Readable name
     protocol: ContactProtocol,
     user: []const u8,
     host: []const u8,
-    port: u16,
+    port: ?u16 = null,
 
     fn addressEnd(char: u8) bool {
         return char == '>' or char == ';';
@@ -70,11 +72,9 @@ pub const Contact = struct {
     /// ["Streats" <sip:streats@192.168.1.130:54216;ob>]
     pub fn parse(contact_text: []const u8) !Contact {
         var contact = Contact{
-            .name = null,
             .protocol = undefined,
             .user = undefined,
             .host = undefined,
-            .port = undefined,
         };
         var reader = SliceReader.init(contact_text);
 
@@ -96,6 +96,14 @@ pub const Contact = struct {
         contact.port = address.port;
 
         return contact;
+    }
+
+    //"Streats" <sip:streats@192.168.1.130:54216>
+    pub fn encode(self: Contact, writer: anytype) !void {
+        if (self.name) |name| try writer.print("{s} ", .{name});
+        try writer.print("<{s}:{s}@{s}", .{ self.protocol.toString(), self.user, self.host });
+        if (self.port) |port| try writer.print(":{d}", .{port});
+        _ = try writer.writeByte('>');
     }
 };
 
@@ -123,38 +131,38 @@ pub const Address = struct {
 
 test "Contact can parse with no name" {
     const contact = try Contact.parse("<sip:streats@localhost>");
-    try std.testing.expect(contact.name == null);
-    try std.testing.expect(contact.protocol == .sip);
-    try std.testing.expect(std.mem.eql(u8, contact.user, "streats"));
-    try std.testing.expect(std.mem.eql(u8, contact.host, "localhost"));
-    try std.testing.expect(contact.port == 5060);
+    try testing.expect(contact.name == null);
+    try testing.expect(contact.protocol == .sip);
+    try testing.expect(std.mem.eql(u8, contact.user, "streats"));
+    try testing.expect(std.mem.eql(u8, contact.host, "localhost"));
+    try testing.expect(contact.port == 5060);
 }
 
 test "Contact can parse with a name" {
     const contact = try Contact.parse("\"Streats\" <sip:streats@localhost>");
-    try std.testing.expect(std.mem.eql(u8, contact.name.?, "Streats"));
-    try std.testing.expect(contact.protocol == .sip);
-    try std.testing.expect(std.mem.eql(u8, contact.user, "streats"));
-    try std.testing.expect(std.mem.eql(u8, contact.host, "localhost"));
-    try std.testing.expect(contact.port == 5060);
+    try testing.expect(std.mem.eql(u8, contact.name.?, "Streats"));
+    try testing.expect(contact.protocol == .sip);
+    try testing.expect(std.mem.eql(u8, contact.user, "streats"));
+    try testing.expect(std.mem.eql(u8, contact.host, "localhost"));
+    try testing.expect(contact.port == 5060);
 }
 
 test "Contact can parse with a port" {
     const contact = try Contact.parse("\"Streats\" <sip:streats@localhost:12345>");
-    try std.testing.expect(std.mem.eql(u8, contact.name.?, "Streats"));
-    try std.testing.expect(contact.protocol == .sip);
-    try std.testing.expect(std.mem.eql(u8, contact.user, "streats"));
-    try std.testing.expect(std.mem.eql(u8, contact.host, "localhost"));
-    try std.testing.expect(contact.port == 12345);
+    try testing.expect(std.mem.eql(u8, contact.name.?, "Streats"));
+    try testing.expect(contact.protocol == .sip);
+    try testing.expect(std.mem.eql(u8, contact.user, "streats"));
+    try testing.expect(std.mem.eql(u8, contact.host, "localhost"));
+    try testing.expect(contact.port == 12345);
 }
 
 test "Contact can parse with attributes" {
     const contact = try Contact.parse("\"Streats\" <sip:streats@192.168.1.130:54216;ob>");
-    try std.testing.expect(std.mem.eql(u8, contact.name.?, "Streats"));
-    try std.testing.expect(contact.protocol == .sip);
-    try std.testing.expect(std.mem.eql(u8, contact.user, "streats"));
-    try std.testing.expect(std.mem.eql(u8, contact.host, "192.168.1.130"));
-    try std.testing.expect(contact.port == 54216);
+    try testing.expect(std.mem.eql(u8, contact.name.?, "Streats"));
+    try testing.expect(contact.protocol == .sip);
+    try testing.expect(std.mem.eql(u8, contact.user, "streats"));
+    try testing.expect(std.mem.eql(u8, contact.host, "192.168.1.130"));
+    try testing.expect(contact.port == 54216);
 }
 
 const TransportProtocol = enum {
@@ -202,11 +210,11 @@ pub const ViaHeader = struct {
     protocol: TransportProtocol,
     address: Address,
     branch: []const u8, //mandatory for UDP
-    rport: ?u16,
-    ttl: ?u32,
-    received: ?[]const u8, //source ip of the request
-    maddr: ?[]const u8, //multicast address
-    sent_by: ?[]const u8, //sender address when using multicast
+    rport: ?u16 = null,
+    ttl: ?u32 = null,
+    received: ?[]const u8 = null, //source ip of the request
+    maddr: ?[]const u8 = null, //multicast address
+    sent_by: ?[]const u8 = null, //sender address when using multicast
 
     fn isWhitespace(char: u8) bool {
         return char == ' ' or char == '\n' or char == '\t';
@@ -260,28 +268,55 @@ pub const ViaHeader = struct {
 
         return via_header;
     }
+
+    pub fn encode(self: ViaHeader, writer: anytype) !void {
+        try writer.print("SIP/2.0/{s} {s}:{d}", .{ self.protocol.toString(), self.address.host, self.address.port });
+        try writer.print(";branch={s}", .{self.branch});
+        if (self.rport) |rport| try writer.print(";rport={d}", .{rport});
+        if (self.ttl) |ttl| try writer.print(";ttl={d}", .{ttl});
+        if (self.received) |received| try writer.print(";received={s}", .{received});
+        if (self.maddr) |maddr| try writer.print(";maddr={s}", .{maddr});
+        if (self.sent_by) |sent_by| try writer.print(";sent-by={s}", .{sent_by});
+        try writer.writeAll("\r\n");
+    }
 };
 
 test "ViaHeader parses values into fields" {
     const header_text = "SIP/2.0/UDP 192.168.1.130:54216;rport;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh";
     const via = try ViaHeader.parse(header_text);
 
-    try std.testing.expect(via.protocol == .udp);
-    try std.testing.expect(std.mem.eql(u8, via.address.host, "192.168.1.130"));
-    try std.testing.expect(via.address.port == 54216);
-    try std.testing.expect(std.mem.eql(u8, via.branch, "z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh"));
+    try testing.expect(via.protocol == .udp);
+    try testing.expect(std.mem.eql(u8, via.address.host, "192.168.1.130"));
+    try testing.expect(via.address.port == 54216);
+    try testing.expect(std.mem.eql(u8, via.branch, "z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh"));
 }
 
 test "ViaHeader parses with whitespace" {
     const header_text = "SIP / 2.0 / UDP first.example.com:4000 ;ttl=16\n;maddr=224.2.0.1 ;branch=z9hG4bKa7c6a8dlze.1";
     const via = try ViaHeader.parse(header_text);
 
-    try std.testing.expect(via.protocol == .udp);
-    try std.testing.expect(std.mem.eql(u8, via.address.host, "first.example.com"));
-    try std.testing.expect(via.address.port == 4000);
-    try std.testing.expect(via.ttl == 16);
-    try std.testing.expect(std.mem.eql(u8, via.maddr.?, "224.2.0.1"));
-    try std.testing.expect(std.mem.eql(u8, via.branch, "z9hG4bKa7c6a8dlze.1"));
+    try testing.expect(via.protocol == .udp);
+    try testing.expect(std.mem.eql(u8, via.address.host, "first.example.com"));
+    try testing.expect(via.address.port == 4000);
+    try testing.expect(via.ttl == 16);
+    try testing.expect(std.mem.eql(u8, via.maddr.?, "224.2.0.1"));
+    try testing.expect(std.mem.eql(u8, via.branch, "z9hG4bKa7c6a8dlze.1"));
+}
+
+test "ViaHeader encodes fields to text" {
+    const via = ViaHeader{
+        .protocol = .udp,
+        .address = .{ .host = "192.168.1.130", .port = 54216 },
+        .branch = "z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh",
+        .ttl = 999,
+    };
+
+    var response_builder = std.ArrayList(u8).init(testing.allocator);
+    defer response_builder.deinit();
+    const writer = response_builder.writer();
+
+    try via.encode(writer);
+    try testing.expect(mem.eql(u8, response_builder.items, "SIP/2.0/UDP 192.168.1.130:54216;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh;ttl=999\r\n"));
 }
 
 pub const FromHeader = struct {
@@ -295,6 +330,13 @@ pub const FromHeader = struct {
             .contact = try Contact.parse(contact_text),
             .tag = try getHeaderParamater(header_text, "tag"),
         };
+    }
+
+    //<sip:user@example.com>;tag=server-tag
+    pub fn encode(self: FromHeader, writer: anytype) !void {
+        try self.contact.encode(writer);
+        if (self.tag) |tag| try writer.print(";tag={s}", .{tag});
+        try writer.writeAll("\r\n");
     }
 };
 
@@ -315,15 +357,12 @@ pub const Sequence = struct {
             .method = try Method.fromString(method_text),
         };
     }
-};
 
-//TODO Status should really be an enum
-pub fn statusCodeToString(status_code: u32) ![]const u8 {
-    switch (status_code) {
-        200 => return "OK",
-        else => return response.SIPError.InvalidStatusCode,
+    // 1 REGISTER
+    pub fn encode(self: Sequence, writer: anytype) !void {
+        try writer.print("{d} {s}\r\n", .{ self.number, self.method.toString() });
     }
-}
+};
 
 pub const Header = enum {
     via,
