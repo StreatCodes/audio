@@ -5,7 +5,6 @@ const fmt = std.fmt;
 const net = std.net;
 const io = std.io;
 const testing = std.testing;
-const response = @import("./response.zig");
 const SliceReader = @import("./SliceReader.zig");
 
 pub const HeaderError = error{
