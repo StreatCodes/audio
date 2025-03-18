@@ -4,7 +4,8 @@ const posix = std.posix;
 const mem = std.mem;
 const debug = std.debug;
 const net = std.net;
-const response = @import("./response.zig");
+const Response = @import("./Response.zig");
+const Request = @import("./Request.zig");
 const headers = @import("./headers.zig");
 
 const Sessions = std.StringHashMap(Session);
@@ -39,36 +40,35 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
             continue;
         }
 
-        var request = response.Message.init(allocator, .request);
-        try request.parse(message);
-        defer request.deinit();
-
         const remote_address = try getAddressAndPort(allocator, client_addr);
-        var res = response.Message.init(allocator, .response);
-        defer res.deinit();
+        var request = try Request.parse(allocator, message);
+        defer request.deinit(allocator);
 
-        if (sessions.getPtr(remote_address)) |session| {
-            //Handle messages for existing sessions
-            switch (request.method.?) {
-                .register => try session.handleRegister(allocator, request, &res),
-                else => debug.print("Unknown message:\n{s}\n", .{message}),
-            }
-        } else {
-            //No session found for remote address, create one
-            if (request.method.? != .register) {
+        //Check to see if a session exists for the remote address, if not create one
+        if (!sessions.contains(remote_address)) {
+            if (request.method != .register) {
                 debug.print("First message must be REGISTER\n", .{});
                 continue;
             }
 
-            const session = try Session.fromRegister(allocator, request, &res);
+            const session = try Session.fromRegister(allocator, request);
             try sessions.put(remote_address, session);
         }
+
+        //Process the message for the session
+        const session = sessions.getPtr(remote_address) orelse unreachable;
+        const response = switch (request.method) {
+            .register => try session.handleRegister(allocator, request),
+            else => try session.handleUnknown(allocator, request),
+        };
 
         var response_builder = std.ArrayList(u8).init(allocator);
         defer response_builder.deinit();
         const writer = response_builder.writer();
 
-        try res.encode(writer);
+        try response.encode(writer);
+        debug.print("Request: [{s}]\n", .{message});
+        debug.print("Response: [{s}]\n", .{response_builder.items});
         _ = try posix.sendto(socket, response_builder.items, 0, &client_addr, client_addr_len);
     }
 }
@@ -85,46 +85,71 @@ pub fn getAddressAndPort(allocator: mem.Allocator, addr: posix.sockaddr) ![]cons
 
 const Session = struct {
     sequence: u32,
-    expires: u32,
-    contact: headers.Contact,
+    // expires: u32,
+    // contact: headers.Contact,
     call_id: []const u8,
-    supported_methods: []headers.Method,
+    // supported_methods: []headers.Method,
 
-    fn fromRegister(allocator: mem.Allocator, request: response.Message, res: *response.Message) !Session {
-        debug.print("REGISTER - New session\n", .{});
-        var session: Session = undefined;
-        session.sequence = 1337;
+    fn fromRegister(allocator: mem.Allocator, request: Request) !Session {
+        debug.print("Creating session for NEWUSERTODO\n", .{});
+        const call_id = try allocator.alloc(u8, request.call_id.len);
+        @memcpy(call_id, request.call_id);
 
-        const via_header = try request.headers.get("Via").?.clone();
-        var to_header = try request.headers.get("To").?.clone();
-        const from_header = try request.headers.get("From").?.clone();
-        const call_id_header = try request.headers.get("Call-ID").?.clone();
-        const cseq_header = try request.headers.get("CSeq").?.clone();
-        var contact_header = try request.headers.get("Contact").?.clone();
-
-        try to_header.parameters.put("tag", "random-value-todo");
-        try contact_header.parameters.put("expires", "300");
-
-        try res.headers.put("Via", via_header); //rport needs to be filled
-        try res.headers.put("To", to_header);
-        try res.headers.put("From", from_header);
-        try res.headers.put("Call-ID", call_id_header);
-        try res.headers.put("CSeq", cseq_header);
-        try res.headers.put("Contact", contact_header);
-        try res.headers.put("Date", try headers.Header.parse(allocator, "Sun, 09 Mar 2025 12:00:00 GMT")); //TODO calculate from time
-        try res.headers.put("Server", try headers.Header.parse(allocator, "StreatsSIP/0.1"));
-        try res.headers.put("Content-Length", try headers.Header.parse(allocator, "0")); //TODO calculate from body
-        res.status = 200;
-
-        return session;
+        return Session{
+            .sequence = request.sequence.number,
+            .call_id = call_id,
+        };
     }
 
-    fn handleRegister(self: *Session, allocator: mem.Allocator, request: response.Message, res: *response.Message) !void {
+    fn handleRegister(self: *Session, allocator: mem.Allocator, request: Request) !Response {
+        _ = self;
+
         debug.print("REGISTER - session update\n", .{});
+        var via = try allocator.alloc(headers.ViaHeader, 1); //TODO LEAKING!
+        via[0] = request.via;
+
+        var contact = try allocator.alloc(headers.ContactHeader, 1); //TODO LEAKING!
+        contact[0] = .{
+            .contact = request.contact.?.contact,
+            .expires = request.expires,
+        };
+
+        return Response{
+            .status = .ok,
+            .via = via,
+            .to = headers.ToHeader{
+                .contact = request.to.contact,
+                .tag = "server-tag",
+            },
+            .from = headers.FromHeader{
+                .contact = request.from.contact,
+                .tag = request.from.tag,
+            },
+            .call_id = request.call_id,
+            .sequence = request.sequence,
+            .contact = contact,
+        };
+    }
+
+    fn handleUnknown(self: Session, allocator: mem.Allocator, request: Request) !Response {
         _ = self;
         _ = allocator;
         _ = request;
-        _ = res;
+        return Response{
+            .status = .ok,
+            .via = &[_]headers.ViaHeader{},
+            .to = headers.ToHeader{
+                .contact = .{ .protocol = .sip, .user = "user", .host = "example.com" },
+                .tag = "server-tag",
+            },
+            .from = headers.FromHeader{
+                .contact = .{ .protocol = .sip, .user = "user", .host = "example.com" },
+                .tag = "123456",
+            },
+            .call_id = "1234567890abcdef@192.168.1.100",
+            .sequence = .{ .method = .register, .number = 1 },
+            .contact = &[_]headers.ContactHeader{},
+        };
     }
 };
 

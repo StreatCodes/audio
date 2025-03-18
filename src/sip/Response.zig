@@ -29,7 +29,7 @@ content_length: ?u32 = null,
 
 body: []const u8 = "",
 
-pub fn encode(self: *Response, writer: anytype) !void {
+pub fn encode(self: Response, writer: anytype) !void {
     try writer.print("SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(self.status), self.status.toString() });
     for (self.via) |via| {
         try writer.print("{s}: ", .{headers.Header.via.toString()});
@@ -105,7 +105,7 @@ test "Responses are correctly generated" {
         "From: <sip:user@example.com>;tag=123456\r\n" ++
         "Call-ID: 1234567890abcdef@192.168.1.100\r\n" ++
         "CSeq: 1 REGISTER\r\n" ++
-        "Contact: <sip:user@192.168.1.100:5060>;expires=3600\r\n" ++
+        "Contact: <sip:user@192.168.1.100>;expires=3600\r\n" ++
         "\r\n";
 
     try std.testing.expect(std.mem.eql(u8, message_builder.items, expected_message));

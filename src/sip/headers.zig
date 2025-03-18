@@ -93,6 +93,7 @@ pub const Contact = struct {
     user: []const u8,
     host: []const u8,
     port: ?u16 = null,
+    ob: bool = false,
 
     fn addressEnd(char: u8) bool {
         return char == '>' or char == ';';
@@ -125,14 +126,31 @@ pub const Contact = struct {
         contact.host = address.host;
         contact.port = address.port;
 
+        const parameter_text = reader.readUntilScalar('>');
+        if (parameter_text.len > 0) {
+            //TODO need more robust way of checking boolean parameters
+            //This will fail if more than one params are present
+            if (mem.eql(u8, parameter_text, ";ob")) {
+                contact.ob = true;
+            }
+        }
+
         return contact;
     }
 
     //"Streats" <sip:streats@192.168.1.130:54216>
     pub fn encode(self: Contact, writer: anytype) !void {
-        if (self.name) |name| try writer.print("{s} ", .{name});
+        if (self.name) |name| try writer.print("\"{s}\" ", .{name});
         try writer.print("<{s}:{s}@{s}", .{ self.protocol.toString(), self.user, self.host });
-        if (self.port) |port| try writer.print(":{d}", .{port});
+        if (self.port) |port| {
+            //TODO convert to switch when we have other protocols
+            if (self.protocol == .sip and self.port != 5060) {
+                try writer.print(":{d}", .{port});
+            }
+        }
+        if (self.ob) {
+            try writer.writeAll(";ob");
+        }
         _ = try writer.writeByte('>');
     }
 };
@@ -260,7 +278,11 @@ pub const ViaHeader = struct {
 
     //SIP/2.0/UDP 192.168.1.130:54216;rport;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh
     pub fn parse(header_text: []const u8) !ViaHeader {
-        var via_header: ViaHeader = undefined;
+        var via_header = ViaHeader{
+            .protocol = undefined,
+            .address = undefined,
+            .branch = undefined,
+        };
         const header_value = getHeaderValue(header_text);
         var reader = SliceReader.init(header_value);
 
