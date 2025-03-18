@@ -4,13 +4,6 @@ const mem = std.mem;
 const fmt = std.fmt;
 const headers = @import("./headers.zig");
 
-pub const SIPError = error{
-    InvalidMessage,
-    InvalidMethod,
-    InvalidHeader,
-    InvalidStatusCode,
-};
-
 const StatusCode = enum(u32) {
     ok = 200,
 
@@ -21,51 +14,50 @@ const StatusCode = enum(u32) {
     }
 };
 
-pub const Response = struct {
-    status: StatusCode,
+const Response = @This();
+status: StatusCode,
 
-    via: []headers.ViaHeader,
-    to: headers.ToHeader,
-    from: headers.FromHeader,
-    call_id: []const u8,
-    sequence: headers.Sequence,
-    contact: []headers.Contact,
-    server: ?[]const u8 = null,
-    allow: ?[]headers.Method = null,
-    content_length: ?u32 = null,
+via: []headers.ViaHeader,
+to: headers.ToHeader,
+from: headers.FromHeader,
+call_id: []const u8,
+sequence: headers.Sequence,
+contact: []headers.Contact,
+server: ?[]const u8 = null,
+allow: ?[]headers.Method = null,
+content_length: ?u32 = null,
 
-    body: []const u8 = "",
+body: []const u8 = "",
 
-    pub fn encode(self: *Response, writer: anytype) !void {
-        try writer.print("SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(self.status), self.status.toString() });
-        for (self.via) |via| {
-            try writer.print("{s}: ", .{headers.Header.via.toString()});
-            try via.encode(writer);
-        }
-
-        try writer.print("{s}: ", .{headers.Header.to.toString()});
-        try self.to.encode(writer);
-
-        try writer.print("{s}: ", .{headers.Header.from.toString()});
-        try self.from.encode(writer);
-
-        try writer.print("{s}: ", .{headers.Header.call_id.toString()});
-        try writer.print("{s}\r\n", .{self.call_id});
-
-        try writer.print("{s}: ", .{headers.Header.cseq.toString()});
-        try self.sequence.encode(writer);
-
-        for (self.contact) |contact| {
-            try writer.print("{s}: ", .{headers.Header.contact.toString()});
-            try contact.encode(writer); //TODO convert to contactHeader....
-            try writer.writeAll("\r\n");
-        }
-
-        try writer.writeAll("\r\n");
-        try writer.writeAll(self.body);
-        //TODO do i need to write /r/n next?
+pub fn encode(self: *Response, writer: anytype) !void {
+    try writer.print("SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(self.status), self.status.toString() });
+    for (self.via) |via| {
+        try writer.print("{s}: ", .{headers.Header.via.toString()});
+        try via.encode(writer);
     }
-};
+
+    try writer.print("{s}: ", .{headers.Header.to.toString()});
+    try self.to.encode(writer);
+
+    try writer.print("{s}: ", .{headers.Header.from.toString()});
+    try self.from.encode(writer);
+
+    try writer.print("{s}: ", .{headers.Header.call_id.toString()});
+    try writer.print("{s}\r\n", .{self.call_id});
+
+    try writer.print("{s}: ", .{headers.Header.cseq.toString()});
+    try self.sequence.encode(writer);
+
+    for (self.contact) |contact| {
+        try writer.print("{s}: ", .{headers.Header.contact.toString()});
+        try contact.encode(writer); //TODO convert to contactHeader....
+        try writer.writeAll("\r\n");
+    }
+
+    try writer.writeAll("\r\n");
+    try writer.writeAll(self.body);
+    //TODO do i need to write /r/n next?
+}
 
 test "Responses are correctly generated" {
     const allocator = std.testing.allocator;

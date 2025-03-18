@@ -7,9 +7,6 @@ const net = std.net;
 const response = @import("./response.zig");
 const headers = @import("./headers.zig");
 
-//TODO
-//Collect all the information we need from client REGISTER requests
-
 const Sessions = std.StringHashMap(Session);
 const UDP_MAX_PAYLOAD = 65507;
 
@@ -30,7 +27,7 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
     //Wait for incoming datagrams and process them
     while (true) {
         var client_addr: posix.sockaddr = undefined;
-        var client_addr_len: posix.socklen_t = undefined;
+        var client_addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
         const recv_bytes = try posix.recvfrom(socket, buf, 0, &client_addr, &client_addr_len);
 
         //Per the spec we need to trim any leading line breaks

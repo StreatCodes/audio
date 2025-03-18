@@ -4,6 +4,10 @@ const headers = @import("./headers.zig");
 const mem = std.mem;
 const debug = std.debug;
 
+const RequestError = error{
+    InvalidMessage,
+};
+
 const Request = @This();
 
 method: headers.Method,
@@ -27,24 +31,24 @@ pub fn parse(allocator: mem.Allocator, message_text: []const u8) !Request {
     var request: Request = undefined;
 
     var lines = std.mem.splitSequence(u8, message_text, "\r\n");
-    const first_line = lines.next() orelse return response.SIPError.InvalidMessage;
+    const first_line = lines.next() orelse return RequestError.InvalidMessage;
 
     //Parse the request line
     var first_line_values = std.mem.splitScalar(u8, first_line, ' ');
 
-    const method = first_line_values.next() orelse return response.SIPError.InvalidMessage;
-    const uri = first_line_values.next() orelse return response.SIPError.InvalidMessage;
-    const version = first_line_values.next() orelse return response.SIPError.InvalidMessage;
+    const method = first_line_values.next() orelse return RequestError.InvalidMessage;
+    const uri = first_line_values.next() orelse return RequestError.InvalidMessage;
+    const version = first_line_values.next() orelse return RequestError.InvalidMessage;
 
     request.method = try headers.Method.fromString(method);
     request.uri = uri;
-    if (!std.mem.eql(u8, version, "SIP/2.0")) return response.SIPError.InvalidMessage;
+    if (!std.mem.eql(u8, version, "SIP/2.0")) return RequestError.InvalidMessage;
 
     //Parse the headers
     while (lines.next()) |line| {
         if (std.mem.eql(u8, line, "")) break;
 
-        const splitIndex = std.mem.indexOfScalar(u8, line, ':') orelse return response.SIPError.InvalidHeader;
+        const splitIndex = std.mem.indexOfScalar(u8, line, ':') orelse return headers.HeaderError.InvalidHeader;
         const field = std.mem.trim(u8, line[0..splitIndex], " ");
         const value = std.mem.trim(u8, line[splitIndex + 1 ..], " ");
 

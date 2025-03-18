@@ -8,6 +8,11 @@ const testing = std.testing;
 const response = @import("./response.zig");
 const SliceReader = @import("./SliceReader.zig");
 
+pub const HeaderError = error{
+    InvalidMethod,
+    InvalidHeader,
+};
+
 fn getHeaderValue(header_text: []const u8) []const u8 {
     var index: usize = 0;
     var quoted = false;
@@ -26,7 +31,7 @@ fn getHeaderValue(header_text: []const u8) []const u8 {
 
 //TODO does not handle escaped semicolons (\;)
 fn getHeaderParamater(header_text: []const u8, attribute_name: []const u8) !?[]const u8 {
-    if (attribute_name.len > 126) return response.SIPError.InvalidHeader;
+    if (attribute_name.len > 126) return HeaderError.InvalidHeader;
     var buf: [128]u8 = undefined;
     const needle = try std.fmt.bufPrint(&buf, ";{s}=", .{attribute_name});
 
@@ -46,7 +51,7 @@ const ContactProtocol = enum {
     pub fn fromString(protocol: []const u8) !ContactProtocol {
         if (std.mem.eql(u8, protocol, "sip")) return ContactProtocol.sip;
 
-        return response.SIPError.InvalidHeader;
+        return HeaderError.InvalidHeader;
     }
 
     pub fn toString(self: ContactProtocol) []const u8 {
@@ -175,7 +180,7 @@ const TransportProtocol = enum {
 
     pub fn fromString(protocol: []const u8) !TransportProtocol {
         const max_protocol_length = 64;
-        if (protocol.len > max_protocol_length) return response.SIPError.InvalidHeader;
+        if (protocol.len > max_protocol_length) return HeaderError.InvalidHeader;
 
         var buffer: [max_protocol_length]u8 = undefined;
         var fba = std.heap.FixedBufferAllocator.init(&buffer);
@@ -191,7 +196,7 @@ const TransportProtocol = enum {
         if (std.mem.eql(u8, protocol_lower, "ws")) return TransportProtocol.ws;
         if (std.mem.eql(u8, protocol_lower, "wss")) return TransportProtocol.wss;
 
-        return response.SIPError.InvalidHeader;
+        return HeaderError.InvalidHeader;
     }
 
     pub fn toString(self: TransportProtocol) []const u8 {
@@ -235,15 +240,15 @@ pub const ViaHeader = struct {
         var reader = SliceReader.init(header_value);
 
         const sip = reader.readWhile(isTransport);
-        if (!mem.eql(u8, sip, "SIP")) return response.SIPError.InvalidHeader;
+        if (!mem.eql(u8, sip, "SIP")) return HeaderError.InvalidHeader;
 
         _ = reader.readUntil(isTransport);
         const version = reader.readWhile(isTransport);
-        if (!mem.eql(u8, version, "2.0")) return response.SIPError.InvalidHeader;
+        if (!mem.eql(u8, version, "2.0")) return HeaderError.InvalidHeader;
 
         _ = reader.readUntil(isTransport);
         const protocol = reader.readWhile(isTransport);
-        if (!mem.eql(u8, protocol, "UDP")) return response.SIPError.InvalidHeader;
+        if (!mem.eql(u8, protocol, "UDP")) return HeaderError.InvalidHeader;
         via_header.protocol = try TransportProtocol.fromString(protocol);
 
         const address_text = std.mem.trimLeft(u8, reader.rest(), " ");
@@ -251,8 +256,8 @@ pub const ViaHeader = struct {
 
         //get attributes
         const magic_cookie = "z9hG4bK";
-        via_header.branch = try getHeaderParamater(header_text, "branch") orelse return response.SIPError.InvalidHeader;
-        if (!std.mem.startsWith(u8, via_header.branch, magic_cookie)) return response.SIPError.InvalidHeader;
+        via_header.branch = try getHeaderParamater(header_text, "branch") orelse return HeaderError.InvalidHeader;
+        if (!std.mem.startsWith(u8, via_header.branch, magic_cookie)) return HeaderError.InvalidHeader;
 
         if (try getHeaderParamater(header_text, "rport")) |rport| {
             via_header.rport = try std.fmt.parseInt(u16, rport, 10);
@@ -349,8 +354,8 @@ pub const Sequence = struct {
     pub fn parse(header_text: []const u8) !Sequence {
         var iter = mem.tokenizeScalar(u8, header_text, ' ');
 
-        const number_text = iter.next() orelse return response.SIPError.InvalidHeader;
-        const method_text = iter.next() orelse return response.SIPError.InvalidHeader;
+        const number_text = iter.next() orelse return HeaderError.InvalidHeader;
+        const method_text = iter.next() orelse return HeaderError.InvalidHeader;
 
         return Sequence{
             .number = try std.fmt.parseInt(u32, number_text, 10),
@@ -379,7 +384,7 @@ pub const Header = enum {
 
     pub fn fromString(field: []const u8) !Header {
         const max_field_length = 128;
-        if (field.len > max_field_length) return response.SIPError.InvalidHeader;
+        if (field.len > max_field_length) return HeaderError.InvalidHeader;
 
         var buffer: [max_field_length]u8 = undefined;
         var fba = std.heap.FixedBufferAllocator.init(&buffer);
@@ -400,7 +405,7 @@ pub const Header = enum {
         if (std.mem.eql(u8, field_lower, "allow")) return Header.allow;
         if (std.mem.eql(u8, field_lower, "content-length")) return Header.content_length;
 
-        return response.SIPError.InvalidHeader;
+        return HeaderError.InvalidHeader;
     }
 
     pub fn toString(self: Header) []const u8 {
@@ -451,7 +456,7 @@ pub const Method = enum {
         if (std.mem.eql(u8, method, "MESSAGE")) return Method.message;
         if (std.mem.eql(u8, method, "UPDATE")) return Method.update;
         if (std.mem.eql(u8, method, "PRACK")) return Method.prack;
-        return response.SIPError.InvalidMethod;
+        return HeaderError.InvalidMethod;
     }
 
     pub fn toString(self: Method) []const u8 {
