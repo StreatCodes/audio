@@ -22,7 +22,7 @@ to: headers.ToHeader,
 from: headers.FromHeader,
 call_id: []const u8,
 sequence: headers.Sequence,
-contact: []headers.Contact,
+contact: []headers.ContactHeader,
 server: ?[]const u8 = null,
 allow: ?[]headers.Method = null,
 content_length: ?u32 = null,
@@ -51,7 +51,6 @@ pub fn encode(self: *Response, writer: anytype) !void {
     for (self.contact) |contact| {
         try writer.print("{s}: ", .{headers.Header.contact.toString()});
         try contact.encode(writer); //TODO convert to contactHeader....
-        try writer.writeAll("\r\n");
     }
 
     try writer.writeAll("\r\n");
@@ -71,8 +70,11 @@ test "Responses are correctly generated" {
         },
     };
 
-    var contact = [_]headers.Contact{
-        .{ .protocol = .sip, .user = "user", .host = "192.168.1.100", .port = 5060 },
+    var contact = [_]headers.ContactHeader{
+        .{
+            .contact = .{ .protocol = .sip, .user = "user", .host = "192.168.1.100", .port = 5060 },
+            .expires = 3600,
+        },
     };
 
     var response = Response{
@@ -103,7 +105,7 @@ test "Responses are correctly generated" {
         "From: <sip:user@example.com>;tag=123456\r\n" ++
         "Call-ID: 1234567890abcdef@192.168.1.100\r\n" ++
         "CSeq: 1 REGISTER\r\n" ++
-        "Contact: <sip:user@192.168.1.100:5060>\r\n" ++ //TODO re add ;expires=3600 once ContactHeader exists
+        "Contact: <sip:user@192.168.1.100:5060>;expires=3600\r\n" ++
         "\r\n";
 
     try std.testing.expect(std.mem.eql(u8, message_builder.items, expected_message));

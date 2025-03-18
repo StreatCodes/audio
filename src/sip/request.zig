@@ -20,7 +20,7 @@ to: headers.ToHeader,
 call_id: []const u8,
 sequence: headers.Sequence,
 user_agent: ?[]const u8,
-contact: ?headers.Contact, //TODO this should be a slice
+contact: ?headers.ContactHeader, //TODO this should be a slice
 expires: ?u32,
 allow: ?[]headers.Method,
 content_length: ?u32,
@@ -63,7 +63,7 @@ pub fn parse(allocator: mem.Allocator, message_text: []const u8) !Request {
             .call_id => request.call_id = value,
             .cseq => request.sequence = try headers.Sequence.parse(value),
             .user_agent => request.user_agent = value,
-            .contact => request.contact = try headers.Contact.parse(value),
+            .contact => request.contact = try headers.ContactHeader.parse(value),
             .expires => request.expires = try std.fmt.parseInt(u32, value, 10),
             .allow => {
                 var iter = std.mem.tokenizeScalar(u8, value, ',');
@@ -97,7 +97,7 @@ test "sip can correctly parse a SIP REGISTER message" {
         "Call-ID: xGAGzEIoe5SHqQnmK5W2jWsIF7kThRbn\r\n" ++
         "CSeq: 37838 REGISTER\r\n" ++
         "User-Agent: Telephone 1.6\r\n" ++
-        "Contact: \"Streats\" <sip:streats@172.20.10.4:55595;ob>\r\n" ++
+        "Contact: \"Streats\" <sip:streats@172.20.10.4:55595;ob>;expires=0\r\n" ++
         "Expires: 300\r\n" ++
         "Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS\r\n" ++
         "Content-Length:  0\r\n" ++
@@ -109,5 +109,6 @@ test "sip can correctly parse a SIP REGISTER message" {
 
     try std.testing.expect(request.method == .register);
     try std.testing.expect(std.mem.eql(u8, request.uri, "sip:localhost"));
+    try std.testing.expect(request.contact.?.expires == 0);
     try std.testing.expect(std.mem.eql(u8, request.body, ""));
 }

@@ -30,7 +30,7 @@ fn getHeaderValue(header_text: []const u8) []const u8 {
 }
 
 //TODO does not handle escaped semicolons (\;)
-fn getHeaderParamater(header_text: []const u8, attribute_name: []const u8) !?[]const u8 {
+fn getHeaderParameter(header_text: []const u8, attribute_name: []const u8) !?[]const u8 {
     if (attribute_name.len > 126) return HeaderError.InvalidHeader;
     var buf: [128]u8 = undefined;
     const needle = try std.fmt.bufPrint(&buf, ";{s}=", .{attribute_name});
@@ -58,6 +58,32 @@ const ContactProtocol = enum {
         switch (self) {
             .sip => return "sip",
         }
+    }
+};
+
+pub const ContactHeader = struct {
+    contact: Contact,
+    expires: ?u32,
+
+    pub fn parse(header_text: []const u8) !ContactHeader {
+        const header_value = getHeaderValue(header_text);
+        var contact_header = ContactHeader{
+            .contact = try Contact.parse(header_value),
+            .expires = undefined,
+        };
+
+        if (try getHeaderParameter(header_text, "expires")) |expires_text| {
+            contact_header.expires = try fmt.parseInt(u32, expires_text, 10);
+        }
+
+        return contact_header;
+    }
+
+    //"Streats" <sip:streats@192.168.1.130:54216>;expires=3000
+    pub fn encode(self: ContactHeader, writer: anytype) !void {
+        try self.contact.encode(writer);
+        if (self.expires) |expires| try writer.print(";expires={d}", .{expires});
+        try writer.writeAll("\r\n");
     }
 };
 
@@ -256,20 +282,20 @@ pub const ViaHeader = struct {
 
         //get attributes
         const magic_cookie = "z9hG4bK";
-        via_header.branch = try getHeaderParamater(header_text, "branch") orelse return HeaderError.InvalidHeader;
+        via_header.branch = try getHeaderParameter(header_text, "branch") orelse return HeaderError.InvalidHeader;
         if (!std.mem.startsWith(u8, via_header.branch, magic_cookie)) return HeaderError.InvalidHeader;
 
-        if (try getHeaderParamater(header_text, "rport")) |rport| {
+        if (try getHeaderParameter(header_text, "rport")) |rport| {
             via_header.rport = try std.fmt.parseInt(u16, rport, 10);
         }
 
-        if (try getHeaderParamater(header_text, "ttl")) |ttl| {
+        if (try getHeaderParameter(header_text, "ttl")) |ttl| {
             via_header.ttl = try std.fmt.parseInt(u32, ttl, 10);
         }
 
-        via_header.received = try getHeaderParamater(header_text, "received");
-        via_header.maddr = try getHeaderParamater(header_text, "maddr");
-        via_header.sent_by = try getHeaderParamater(header_text, "sent_by");
+        via_header.received = try getHeaderParameter(header_text, "received");
+        via_header.maddr = try getHeaderParameter(header_text, "maddr");
+        via_header.sent_by = try getHeaderParameter(header_text, "sent_by");
 
         return via_header;
     }
@@ -333,7 +359,7 @@ pub const FromHeader = struct {
 
         return FromHeader{
             .contact = try Contact.parse(contact_text),
-            .tag = try getHeaderParamater(header_text, "tag"),
+            .tag = try getHeaderParameter(header_text, "tag"),
         };
     }
 
