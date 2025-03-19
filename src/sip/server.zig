@@ -41,8 +41,9 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         }
 
         const remote_address = try getAddressAndPort(allocator, client_addr);
-        var request = try Request.parse(allocator, message);
-        defer request.deinit(allocator);
+        var request = Request.init(allocator);
+        defer request.deinit();
+        try request.parse(message);
 
         //Check to see if a session exists for the remote address, if not create one
         if (!sessions.contains(remote_address)) {
@@ -61,11 +62,11 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         defer response.deinit();
 
         //These fields have consistent responses across all methods
-        try response.via.append(request.via);
-        response.to = .{
-            .contact = request.to.contact,
-            .tag = "server-tag",
-        };
+        for (request.via.items) |via| {
+            try response.via.append(via);
+        }
+        response.to = request.to;
+        request.to.?.tag = "server-tag"; //TODO we need to make sure this is always present, validate in parse or seperate function
         response.from = request.from;
         response.call_id = request.call_id;
         response.sequence = request.sequence;
@@ -110,8 +111,9 @@ const Session = struct {
         const call_id = try allocator.alloc(u8, request.call_id.len);
         @memcpy(call_id, request.call_id);
 
+        const sequence = request.sequence orelse return Request.RequestError.InvalidMessage;
         return Session{
-            .sequence = request.sequence.number,
+            .sequence = sequence.number,
             .call_id = call_id,
         };
     }
@@ -121,10 +123,12 @@ const Session = struct {
 
         debug.print("REGISTER - session update\n", .{});
 
-        try response.contact.append(.{
-            .contact = request.contact.?.contact,
-            .expires = request.expires,
-        });
+        for (request.contact.items) |contact_header| {
+            try response.contact.append(.{
+                .contact = contact_header.contact,
+                .expires = request.expires,
+            });
+        }
     }
 
     fn handleUnknown(self: Session, request: Request, response: *Response) !void {

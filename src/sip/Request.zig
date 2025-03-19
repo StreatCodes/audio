@@ -3,33 +3,46 @@ const response = @import("./response.zig");
 const headers = @import("./headers.zig");
 const mem = std.mem;
 const debug = std.debug;
+const ArrayList = std.ArrayList;
 
-const RequestError = error{
+pub const RequestError = error{
     InvalidMessage,
 };
 
 const Request = @This();
 
-method: headers.Method,
-uri: []const u8,
+method: headers.Method = .register,
+uri: []const u8 = "",
 
-via: headers.ViaHeader, //TODO this should be a slice
-max_forwards: u32,
-from: headers.FromHeader,
-to: headers.ToHeader,
-call_id: []const u8,
-sequence: headers.Sequence,
-user_agent: ?[]const u8,
-contact: ?headers.ContactHeader, //TODO this should be a slice
-expires: ?u32,
-allow: ?[]headers.Method,
-content_length: ?u32,
+via: ArrayList(headers.ViaHeader),
+max_forwards: u32 = 70,
+from: ?headers.FromHeader = null,
+to: ?headers.ToHeader = null,
+call_id: []const u8 = "",
+sequence: ?headers.Sequence = null,
+user_agent: ?[]const u8 = null,
+contact: ArrayList(headers.ContactHeader),
+expires: u32 = 300,
+allow: ArrayList(headers.Method),
+content_length: u32 = 0,
 
-body: []const u8,
+body: []const u8 = "",
 
-pub fn parse(allocator: mem.Allocator, message_text: []const u8) !Request {
-    var request: Request = undefined;
+pub fn init(alloactor: mem.Allocator) Request {
+    return Request{
+        .via = ArrayList(headers.ViaHeader).init(alloactor),
+        .contact = ArrayList(headers.ContactHeader).init(alloactor),
+        .allow = ArrayList(headers.Method).init(alloactor),
+    };
+}
 
+pub fn deinit(self: Request) void {
+    self.via.deinit();
+    self.contact.deinit();
+    self.allow.deinit();
+}
+
+pub fn parse(self: *Request, message_text: []const u8) !void {
     var lines = std.mem.splitSequence(u8, message_text, "\r\n");
     const first_line = lines.next() orelse return RequestError.InvalidMessage;
 
@@ -40,8 +53,8 @@ pub fn parse(allocator: mem.Allocator, message_text: []const u8) !Request {
     const uri = first_line_values.next() orelse return RequestError.InvalidMessage;
     const version = first_line_values.next() orelse return RequestError.InvalidMessage;
 
-    request.method = try headers.Method.fromString(method);
-    request.uri = uri;
+    self.method = try headers.Method.fromString(method);
+    self.uri = uri;
     if (!std.mem.eql(u8, version, "SIP/2.0")) return RequestError.InvalidMessage;
 
     //Parse the headers
@@ -54,38 +67,35 @@ pub fn parse(allocator: mem.Allocator, message_text: []const u8) !Request {
 
         const header_field = try headers.Header.fromString(field);
 
-        //TODO some fields should actually be arrays and can either be comma seperated or multiple instances of the header
+        //TODO contact can have multiple values in one header that's comma seperated
         switch (header_field) {
-            .via => request.via = try headers.ViaHeader.parse(value),
-            .max_forwards => request.max_forwards = try std.fmt.parseInt(u32, value, 10),
-            .from => request.from = try headers.FromHeader.parse(value),
-            .to => request.to = try headers.ToHeader.parse(value),
-            .call_id => request.call_id = value,
-            .cseq => request.sequence = try headers.Sequence.parse(value),
-            .user_agent => request.user_agent = value,
-            .contact => request.contact = try headers.ContactHeader.parse(value),
-            .expires => request.expires = try std.fmt.parseInt(u32, value, 10),
+            .via => {
+                const via = try headers.ViaHeader.parse(value);
+                try self.via.append(via);
+            },
+            .max_forwards => self.max_forwards = try std.fmt.parseInt(u32, value, 10),
+            .from => self.from = try headers.FromHeader.parse(value),
+            .to => self.to = try headers.ToHeader.parse(value),
+            .call_id => self.call_id = value,
+            .cseq => self.sequence = try headers.Sequence.parse(value),
+            .user_agent => self.user_agent = value,
+            .contact => {
+                const contact = try headers.ContactHeader.parse(value);
+                try self.contact.append(contact);
+            },
+            .expires => self.expires = try std.fmt.parseInt(u32, value, 10),
             .allow => {
                 var iter = std.mem.tokenizeScalar(u8, value, ',');
-                var allow_methods = std.ArrayList(headers.Method).init(allocator);
                 while (iter.next()) |method_text| {
                     const trimmed = mem.trim(u8, method_text, " ");
-                    try allow_methods.append(try headers.Method.fromString(trimmed));
+                    try self.allow.append(try headers.Method.fromString(trimmed));
                 }
-                request.allow = try allow_methods.toOwnedSlice();
             },
-            .content_length => request.content_length = try std.fmt.parseInt(u32, value, 10),
+            .content_length => self.content_length = try std.fmt.parseInt(u32, value, 10),
         }
     }
 
-    request.body = lines.rest();
-    return request;
-}
-
-pub fn deinit(self: *Request, allocator: mem.Allocator) void {
-    if (self.allow) |allow| {
-        allocator.free(allow);
-    }
+    self.body = lines.rest();
 }
 
 test "sip can correctly parse a SIP REGISTER message" {
@@ -104,11 +114,12 @@ test "sip can correctly parse a SIP REGISTER message" {
         "\r\n";
 
     const allocator = std.testing.allocator;
-    var request = try Request.parse(allocator, message);
-    defer request.deinit(allocator);
+    var request = Request.init(allocator);
+    defer request.deinit();
 
+    try request.parse(message);
     try std.testing.expect(request.method == .register);
     try std.testing.expect(std.mem.eql(u8, request.uri, "sip:localhost"));
-    try std.testing.expect(request.contact.?.expires == 0);
+    try std.testing.expect(request.contact.items[0].expires == 0);
     try std.testing.expect(std.mem.eql(u8, request.body, ""));
 }
