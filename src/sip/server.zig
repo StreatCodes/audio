@@ -57,11 +57,26 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
 
         //Process the message for the session
         const session = sessions.getPtr(remote_address) orelse unreachable;
-        const response = switch (request.method) {
-            .register => try session.handleRegister(allocator, request),
-            else => try session.handleUnknown(allocator, request),
-        };
+        var response = Response.init(allocator);
+        defer response.deinit();
 
+        //These fields have consistent responses across all methods
+        try response.via.append(request.via);
+        response.to = .{
+            .contact = request.to.contact,
+            .tag = "server-tag",
+        };
+        response.from = request.from;
+        response.call_id = request.call_id;
+        response.sequence = request.sequence;
+
+        //Handle the different request methods
+        switch (request.method) {
+            .register => try session.handleRegister(request, &response),
+            else => try session.handleUnknown(request, &response),
+        }
+
+        //Write the response back to the client
         var response_builder = std.ArrayList(u8).init(allocator);
         defer response_builder.deinit();
         const writer = response_builder.writer();
@@ -101,54 +116,20 @@ const Session = struct {
         };
     }
 
-    fn handleRegister(self: *Session, allocator: mem.Allocator, request: Request) !Response {
+    fn handleRegister(self: *Session, request: Request, response: *Response) !void {
         _ = self;
 
         debug.print("REGISTER - session update\n", .{});
-        var via = try allocator.alloc(headers.ViaHeader, 1); //TODO LEAKING!
-        via[0] = request.via;
 
-        var contact = try allocator.alloc(headers.ContactHeader, 1); //TODO LEAKING!
-        contact[0] = .{
+        try response.contact.append(.{
             .contact = request.contact.?.contact,
             .expires = request.expires,
-        };
-
-        return Response{
-            .status = .ok,
-            .via = via,
-            .to = headers.ToHeader{
-                .contact = request.to.contact,
-                .tag = "server-tag",
-            },
-            .from = headers.FromHeader{
-                .contact = request.from.contact,
-                .tag = request.from.tag,
-            },
-            .call_id = request.call_id,
-            .sequence = request.sequence,
-            .contact = contact,
-        };
+        });
     }
 
-    fn handleUnknown(self: Session, allocator: mem.Allocator, request: Request) !Response {
+    fn handleUnknown(self: Session, request: Request, response: *Response) !void {
         _ = self;
-        _ = allocator;
         _ = request;
-        return Response{
-            .status = .ok,
-            .via = &[_]headers.ViaHeader{},
-            .to = headers.ToHeader{
-                .contact = .{ .protocol = .sip, .user = "user", .host = "example.com" },
-                .tag = "server-tag",
-            },
-            .from = headers.FromHeader{
-                .contact = .{ .protocol = .sip, .user = "user", .host = "example.com" },
-                .tag = "123456",
-            },
-            .call_id = "1234567890abcdef@192.168.1.100",
-            .sequence = .{ .method = .register, .number = 1 },
-            .contact = &[_]headers.ContactHeader{},
-        };
+        response.status = .ok; //TODO not ok...
     }
 };

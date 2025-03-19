@@ -2,7 +2,83 @@ const std = @import("std");
 const debug = std.debug;
 const mem = std.mem;
 const fmt = std.fmt;
+const ArrayList = std.ArrayList;
 const headers = @import("./headers.zig");
+
+const ResponseError = error{
+    FieldRequired,
+};
+
+const Response = @This();
+status: StatusCode = .ok,
+
+via: ArrayList(headers.ViaHeader),
+to: ?headers.ToHeader = null,
+from: ?headers.FromHeader = null,
+call_id: []const u8,
+sequence: ?headers.Sequence = null,
+contact: ArrayList(headers.ContactHeader),
+server: ?[]const u8 = null,
+allow: ArrayList(headers.Method),
+content_length: u32 = 0,
+
+body: []const u8 = "",
+
+pub fn init(allocator: mem.Allocator) Response {
+    return .{
+        .via = ArrayList(headers.ViaHeader).init(allocator),
+        .call_id = "",
+        .contact = ArrayList(headers.ContactHeader).init(allocator),
+        .allow = ArrayList(headers.Method).init(allocator),
+    };
+}
+
+pub fn deinit(self: *Response) void {
+    self.via.deinit();
+    self.contact.deinit();
+    self.allow.deinit();
+}
+
+pub fn encode(self: Response, writer: anytype) !void {
+    try writer.print("SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(self.status), self.status.toString() });
+    for (self.via.items) |via| {
+        try writer.print("{s}: ", .{headers.Header.via.toString()});
+        try via.encode(writer);
+    }
+
+    if (self.to) |to| {
+        try writer.print("{s}: ", .{headers.Header.to.toString()});
+        try to.encode(writer);
+    } else {
+        return ResponseError.FieldRequired;
+    }
+
+    if (self.from) |from| {
+        try writer.print("{s}: ", .{headers.Header.from.toString()});
+        try from.encode(writer);
+    } else {
+        return ResponseError.FieldRequired;
+    }
+
+    try writer.print("{s}: ", .{headers.Header.call_id.toString()});
+    try writer.print("{s}\r\n", .{self.call_id});
+
+    if (self.sequence) |sequence| {
+        try writer.print("{s}: ", .{headers.Header.cseq.toString()});
+        try sequence.encode(writer);
+    } else {
+        return ResponseError.FieldRequired;
+    }
+
+    for (self.contact.items) |contact| {
+        try writer.print("{s}: ", .{headers.Header.contact.toString()});
+        try contact.encode(writer);
+    }
+
+    try writer.writeAll("\r\n");
+    try writer.writeAll(self.body);
+    //TODO do i need to write /r/n next?
+}
 
 const StatusCode = enum(u32) {
     ok = 200,
@@ -14,84 +90,36 @@ const StatusCode = enum(u32) {
     }
 };
 
-const Response = @This();
-status: StatusCode,
-
-via: []headers.ViaHeader,
-to: headers.ToHeader,
-from: headers.FromHeader,
-call_id: []const u8,
-sequence: headers.Sequence,
-contact: []headers.ContactHeader,
-server: ?[]const u8 = null,
-allow: ?[]headers.Method = null,
-content_length: ?u32 = null,
-
-body: []const u8 = "",
-
-pub fn encode(self: Response, writer: anytype) !void {
-    try writer.print("SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(self.status), self.status.toString() });
-    for (self.via) |via| {
-        try writer.print("{s}: ", .{headers.Header.via.toString()});
-        try via.encode(writer);
-    }
-
-    try writer.print("{s}: ", .{headers.Header.to.toString()});
-    try self.to.encode(writer);
-
-    try writer.print("{s}: ", .{headers.Header.from.toString()});
-    try self.from.encode(writer);
-
-    try writer.print("{s}: ", .{headers.Header.call_id.toString()});
-    try writer.print("{s}\r\n", .{self.call_id});
-
-    try writer.print("{s}: ", .{headers.Header.cseq.toString()});
-    try self.sequence.encode(writer);
-
-    for (self.contact) |contact| {
-        try writer.print("{s}: ", .{headers.Header.contact.toString()});
-        try contact.encode(writer); //TODO convert to contactHeader....
-    }
-
-    try writer.writeAll("\r\n");
-    try writer.writeAll(self.body);
-    //TODO do i need to write /r/n next?
-}
-
 test "Responses are correctly generated" {
     const allocator = std.testing.allocator;
 
-    var via = [_]headers.ViaHeader{
-        .{
-            .protocol = .udp,
-            .address = .{ .host = "192.168.1.100", .port = 5060 },
-            .branch = "z9hG4bK776asdhds",
-            .received = "192.168.1.100",
-        },
+    var response = Response.init(allocator);
+    defer response.deinit();
+
+    try response.via.append(.{
+        .protocol = .udp,
+        .address = .{ .host = "192.168.1.100", .port = 5060 },
+        .branch = "z9hG4bK776asdhds",
+        .received = "192.168.1.100",
+    });
+
+    try response.contact.append(.{
+        .contact = .{ .protocol = .sip, .user = "user", .host = "192.168.1.100", .port = 5060 },
+        .expires = 3600,
+    });
+
+    response.to = .{
+        .contact = .{ .protocol = .sip, .user = "user", .host = "example.com" },
+        .tag = "server-tag",
     };
 
-    var contact = [_]headers.ContactHeader{
-        .{
-            .contact = .{ .protocol = .sip, .user = "user", .host = "192.168.1.100", .port = 5060 },
-            .expires = 3600,
-        },
+    response.from = .{
+        .contact = .{ .protocol = .sip, .user = "user", .host = "example.com" },
+        .tag = "123456",
     };
 
-    var response = Response{
-        .status = .ok,
-        .via = &via,
-        .to = headers.ToHeader{
-            .contact = .{ .protocol = .sip, .user = "user", .host = "example.com" },
-            .tag = "server-tag",
-        },
-        .from = headers.FromHeader{
-            .contact = .{ .protocol = .sip, .user = "user", .host = "example.com" },
-            .tag = "123456",
-        },
-        .call_id = "1234567890abcdef@192.168.1.100",
-        .sequence = .{ .method = .register, .number = 1 },
-        .contact = &contact,
-    };
+    response.call_id = "1234567890abcdef@192.168.1.100";
+    response.sequence = .{ .method = .register, .number = 1 };
 
     var message_builder = std.ArrayList(u8).init(allocator);
     defer message_builder.deinit();
