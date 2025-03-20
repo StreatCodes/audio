@@ -80,12 +80,22 @@ pub fn encode(self: Response, writer: anytype) !void {
     //TODO do i need to write /r/n next?
 }
 
-const StatusCode = enum(u32) {
+pub const StatusCode = enum(u32) {
     ok = 200,
+    bad_request = 400,
+    unauthorized = 401,
+    forbidden = 403,
+    internal_error = 500,
+    not_implemented = 501,
 
     fn toString(self: StatusCode) []const u8 {
         switch (self) {
             .ok => return "OK",
+            .bad_request => return "Bad Request",
+            .unauthorized => return "Unauthorized",
+            .forbidden => return "Forbidden",
+            .internal_error => return "Server Internal Error",
+            .not_implemented => return "Not Implemented",
         }
     }
 };

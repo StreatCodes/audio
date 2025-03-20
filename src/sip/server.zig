@@ -4,6 +4,7 @@ const posix = std.posix;
 const mem = std.mem;
 const debug = std.debug;
 const net = std.net;
+const testing = std.testing;
 const Response = @import("./Response.zig");
 const Request = @import("./Request.zig");
 const headers = @import("./headers.zig");
@@ -108,6 +109,7 @@ const Session = struct {
     /// All SIP messages will get routed through this to the appropriate handler
     /// for that method
     fn handleMessage(self: *Session, request: Request, response: *Response) !void {
+        //TODO add some validation for call_id and out of order sequences
         //These fields have consistent responses across all methods
         for (request.via.items) |via| {
             try response.via.append(via);
@@ -141,6 +143,35 @@ const Session = struct {
     fn handleUnknown(self: Session, request: Request, response: *Response) !void {
         _ = self;
         _ = request;
-        response.status = .ok; //TODO not ok...
+        response.status = .not_implemented;
     }
 };
+
+test "Server responds appropriately to REGISTER message" {
+    const request_text = "REGISTER sip:localhost SIP/2.0\r\n" ++
+        "Via: SIP/2.0/UDP 172.20.10.4:51503;rport;branch=z9hG4bKPjDdUL.6kHzjJFszmWr9AGotAlsZvHTB0P\r\n" ++
+        "Max-Forwards: 70\r\n" ++
+        "From: \"Streats\" <sip:streats@localhost>;tag=fhKG9FMFGbyIi5LZTlwro5qigCxoFqwf\r\n" ++
+        "To: \"Streats\" <sip:streats@localhost>\r\n" ++
+        "Call-ID: Fb5KdYo-eWr4WVTWTv0vwxwi.XvJFoGf\r\n" ++
+        "CSeq: 34848 REGISTER\r\n" ++
+        "User-Agent: Telephone 1.6\r\n" ++
+        "Contact: \"Streats\" <sip:streats@172.20.10.4:51503;ob>\r\n" ++
+        "Expires: 0\r\n" ++
+        "Content-Length:  0\r\n" ++
+        "\r\n";
+
+    var session = Session{ .call_id = "", .sequence = 0 };
+    var request = Request.init(testing.allocator);
+    defer request.deinit();
+    try request.parse(request_text);
+
+    var response = Response.init(testing.allocator);
+    defer response.deinit();
+    try session.handleMessage(request, &response);
+
+    //TODO make this more thorough
+    try testing.expectEqual(response.status, Response.StatusCode.ok);
+    try testing.expectEqualStrings(response.call_id, request.call_id);
+    try testing.expectEqual(response.sequence.?.number, request.sequence.?.number);
+}
