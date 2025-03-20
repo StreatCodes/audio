@@ -61,21 +61,7 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         var response = Response.init(allocator);
         defer response.deinit();
 
-        //These fields have consistent responses across all methods
-        for (request.via.items) |via| {
-            try response.via.append(via);
-        }
-        response.to = request.to;
-        request.to.?.tag = "server-tag"; //TODO we need to make sure this is always present, validate in parse or seperate function
-        response.from = request.from;
-        response.call_id = request.call_id;
-        response.sequence = request.sequence;
-
-        //Handle the different request methods
-        switch (request.method) {
-            .register => try session.handleRegister(request, &response),
-            else => try session.handleUnknown(request, &response),
-        }
+        try session.handleMessage(request, &response);
 
         //Write the response back to the client
         var response_builder = std.ArrayList(u8).init(allocator);
@@ -116,6 +102,27 @@ const Session = struct {
             .sequence = sequence.number,
             .call_id = call_id,
         };
+    }
+
+    /// Accepts a SIP request for an established session and returns a response.
+    /// All SIP messages will get routed through this to the appropriate handler
+    /// for that method
+    fn handleMessage(self: *Session, request: Request, response: *Response) !void {
+        //These fields have consistent responses across all methods
+        for (request.via.items) |via| {
+            try response.via.append(via);
+        }
+        response.to = request.to;
+        response.to.?.tag = "server-tag"; //TODO we need to make sure this is always present, validate in parse or seperate function
+        response.from = request.from;
+        response.call_id = request.call_id;
+        response.sequence = request.sequence;
+
+        //Handle the different request methods
+        switch (request.method) {
+            .register => try self.handleRegister(request, response),
+            else => try self.handleUnknown(request, response),
+        }
     }
 
     fn handleRegister(self: *Session, request: Request, response: *Response) !void {
