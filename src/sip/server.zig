@@ -54,7 +54,7 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
                 continue;
             }
 
-            const session = try Session.init(allocator);
+            const session = Session.init(allocator);
             try sessions.put(remote_address, session);
         }
 
