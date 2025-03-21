@@ -1,5 +1,4 @@
 const std = @import("std");
-const response = @import("./response.zig");
 const headers = @import("./headers.zig");
 const mem = std.mem;
 const debug = std.debug;
