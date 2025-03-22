@@ -25,21 +25,19 @@ expires: u32 = 300,
 allow: ArrayList(headers.Method),
 content_length: u32 = 0,
 content_type: ?[]const u8 = null,
+supported: ArrayList(headers.Extension),
 
 body: []const u8 = "",
 
 pub fn init(alloactor: mem.Allocator) Request {
-    return Request{
-        .via = ArrayList(headers.ViaHeader).init(alloactor),
-        .contact = ArrayList(headers.ContactHeader).init(alloactor),
-        .allow = ArrayList(headers.Method).init(alloactor),
-    };
+    return Request{ .via = ArrayList(headers.ViaHeader).init(alloactor), .contact = ArrayList(headers.ContactHeader).init(alloactor), .allow = ArrayList(headers.Method).init(alloactor), .supported = ArrayList(headers.Extension).init(alloactor) };
 }
 
 pub fn deinit(self: Request) void {
     self.via.deinit();
     self.contact.deinit();
     self.allow.deinit();
+    self.supported.deinit();
 }
 
 pub fn parse(self: *Request, message_text: []const u8) !void {
@@ -93,6 +91,13 @@ pub fn parse(self: *Request, message_text: []const u8) !void {
             },
             .content_length => self.content_length = try std.fmt.parseInt(u32, value, 10),
             .content_type => self.content_type = value,
+            .supported => {
+                var iter = std.mem.tokenizeScalar(u8, value, ',');
+                while (iter.next()) |extension_text| {
+                    const trimmed = mem.trim(u8, extension_text, " ");
+                    try self.supported.append(try headers.Extension.fromString(trimmed));
+                }
+            },
         }
     }
 

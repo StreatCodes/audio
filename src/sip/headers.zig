@@ -10,6 +10,7 @@ const SliceReader = @import("./SliceReader.zig");
 pub const HeaderError = error{
     InvalidMethod,
     InvalidHeader,
+    UnknownExtension,
 };
 
 fn getHeaderValue(header_text: []const u8) []const u8 {
@@ -99,8 +100,16 @@ pub const Contact = struct {
         return char == '>' or char == ';';
     }
 
-    /// Parses a contact in the following format
+    fn alphaCharacter(char: u8) bool {
+        if (char >= 'a' and char <= 'z') return true;
+        if (char >= 'A' and char <= 'Z') return true;
+        return false;
+    }
+
+    /// Parses a contact in the following formats
     /// ["Streats" <sip:streats@192.168.1.130:54216;ob>]
+    /// [<sip:streats@localhost>]
+    /// [sip:streats@localhost]
     pub fn parse(contact_text: []const u8) !Contact {
         var contact = Contact{
             .protocol = undefined,
@@ -114,7 +123,11 @@ pub const Contact = struct {
             contact.name = reader.readUntilScalarExcluding('"');
         }
 
-        _ = reader.readUntilScalarExcluding('<');
+        if (reader.peek()) |next_char| {
+            if (!alphaCharacter(next_char)) {
+                _ = reader.readUntilScalarExcluding('<');
+            }
+        }
 
         const protocol = reader.readUntilScalarExcluding(':');
         contact.protocol = try ContactProtocol.fromString(protocol);
@@ -155,27 +168,14 @@ pub const Contact = struct {
     }
 };
 
-//TODO use above in Contact
-pub const Address = struct {
-    host: []const u8,
-    port: u16,
-
-    /// Parses an address in the following format
-    /// [192.168.1.130:54216]
-    pub fn parse(address_text: []const u8) !Address {
-        var reader = SliceReader.init(address_text);
-
-        const host = reader.readUntilScalarExcluding(':');
-        var port: u16 = 5060;
-        const port_text = reader.rest();
-        if (port_text.len > 0) port = try fmt.parseInt(u16, port_text, 10);
-
-        return Address{
-            .host = host,
-            .port = port,
-        };
-    }
-};
+test "Contact can parse with no name or angled brackets" {
+    const contact = try Contact.parse("sip:streats@localhost");
+    try testing.expectEqual(contact.name, null);
+    try testing.expectEqual(contact.protocol, .sip);
+    try testing.expectEqualStrings(contact.user, "streats");
+    try testing.expectEqualStrings(contact.host, "localhost");
+    try testing.expectEqual(contact.port, 5060);
+}
 
 test "Contact can parse with no name" {
     const contact = try Contact.parse("<sip:streats@localhost>");
@@ -212,6 +212,28 @@ test "Contact can parse with attributes" {
     try testing.expect(std.mem.eql(u8, contact.host, "192.168.1.130"));
     try testing.expect(contact.port == 54216);
 }
+
+//TODO use above in Contact
+pub const Address = struct {
+    host: []const u8,
+    port: u16,
+
+    /// Parses an address in the following format
+    /// [192.168.1.130:54216]
+    pub fn parse(address_text: []const u8) !Address {
+        var reader = SliceReader.init(address_text);
+
+        const host = reader.readUntilScalarExcluding(':');
+        var port: u16 = 5060;
+        const port_text = reader.rest();
+        if (port_text.len > 0) port = try fmt.parseInt(u16, port_text, 10);
+
+        return Address{
+            .host = host,
+            .port = port,
+        };
+    }
+};
 
 const TransportProtocol = enum {
     udp,
@@ -429,6 +451,7 @@ pub const Header = enum {
     allow,
     content_length,
     content_type,
+    supported,
 
     pub fn fromString(field: []const u8) !Header {
         const max_field_length = 128;
@@ -453,6 +476,7 @@ pub const Header = enum {
         if (std.mem.eql(u8, field_lower, "allow")) return Header.allow;
         if (std.mem.eql(u8, field_lower, "content-length")) return Header.content_length;
         if (std.mem.eql(u8, field_lower, "content-type")) return Header.content_type;
+        if (std.mem.eql(u8, field_lower, "supported")) return Header.supported;
 
         debug.print("bad header {s}\n", .{field_lower});
         return HeaderError.InvalidHeader;
@@ -472,6 +496,7 @@ pub const Header = enum {
             .allow => return "Allow",
             .content_length => return "Content-Length",
             .content_type => return "Content-Type",
+            .supported => return "Supported",
         }
     }
 };
@@ -526,6 +551,28 @@ pub const Method = enum {
             .message => return "MESSAGE",
             .update => return "UPDATE",
             .prack => return "PRACK",
+        }
+    }
+};
+
+pub const Extension = enum {
+    replaces,
+    one_hundred_rel,
+    no_refer_sub,
+
+    pub fn fromString(extension: []const u8) !Extension {
+        if (std.mem.eql(u8, extension, "replaces")) return Extension.replaces;
+        if (std.mem.eql(u8, extension, "100rel")) return Extension.one_hundred_rel;
+        if (std.mem.eql(u8, extension, "norefersub")) return Extension.no_refer_sub;
+        debug.print("unknown extension: {s}\n", .{extension});
+        return HeaderError.UnknownExtension;
+    }
+
+    pub fn toString(self: Extension) []const u8 {
+        switch (self) {
+            .replaces => return "replaces",
+            .one_hundred_rel => return "100rel",
+            .no_refer_sub => return "norefersub",
         }
     }
 };
