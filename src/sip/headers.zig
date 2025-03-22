@@ -428,6 +428,7 @@ pub const Header = enum {
     expires,
     allow,
     content_length,
+    content_type,
 
     pub fn fromString(field: []const u8) !Header {
         const max_field_length = 128;
@@ -451,7 +452,9 @@ pub const Header = enum {
         if (std.mem.eql(u8, field_lower, "expires")) return Header.expires;
         if (std.mem.eql(u8, field_lower, "allow")) return Header.allow;
         if (std.mem.eql(u8, field_lower, "content-length")) return Header.content_length;
+        if (std.mem.eql(u8, field_lower, "content-type")) return Header.content_type;
 
+        debug.print("bad header {s}\n", .{field_lower});
         return HeaderError.InvalidHeader;
     }
 
@@ -468,6 +471,7 @@ pub const Header = enum {
             .expires => return "Expires",
             .allow => return "Allow",
             .content_length => return "Content-Length",
+            .content_type => return "Content-Type",
         }
     }
 };

@@ -24,6 +24,7 @@ contact: ArrayList(headers.ContactHeader),
 expires: u32 = 300,
 allow: ArrayList(headers.Method),
 content_length: u32 = 0,
+content_type: ?[]const u8 = null,
 
 body: []const u8 = "",
 
@@ -91,6 +92,7 @@ pub fn parse(self: *Request, message_text: []const u8) !void {
                 }
             },
             .content_length => self.content_length = try std.fmt.parseInt(u32, value, 10),
+            .content_type => self.content_type = value,
         }
     }
 
