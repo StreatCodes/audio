@@ -23,8 +23,8 @@ supported_methods: ArrayList(headers.Method),
 pub fn init(allocator: mem.Allocator) Session {
     return Session{
         .allocator = allocator,
-        .contacts = ArrayList(headers.Contact).init(allocator),
-        .supported_methods = ArrayList(headers.Method).init(allocator),
+        .contacts = ArrayList(headers.Contact).empty,
+        .supported_methods = ArrayList(headers.Method).empty,
     };
 }
 
@@ -41,7 +41,7 @@ pub fn handleMessage(self: *Session, request: Request, response: *Response) !voi
     //TODO add some validation for call_id and out of order sequences
     //These fields have consistent responses across all methods
     for (request.via.items) |via| {
-        try response.via.append(via);
+        try response.via.append(self.allocator, via);
     }
     response.to = request.to;
     response.to.?.tag = "server-tag"; //TODO we need to make sure this is always present, validate in parse or seperate function
@@ -75,17 +75,17 @@ fn handleRegister(self: *Session, request: Request, response: *Response) !void {
 
     self.contacts.clearRetainingCapacity();
     for (request.contact.items) |contact_header| {
-        try self.contacts.append(contact_header.contact);
+        try self.contacts.append(self.allocator, contact_header.contact);
     }
     //TODO surely this can be improved
     self.supported_methods.clearRetainingCapacity();
     for (request.allow.items) |allowed_method| {
-        try self.supported_methods.append(allowed_method);
+        try self.supported_methods.append(self.allocator, allowed_method);
     }
 
     //Set expiries on reponse
     for (request.contact.items) |contact_header| {
-        try response.contact.append(.{
+        try response.contact.append(self.allocator, .{
             .contact = contact_header.contact,
             .expires = request.expires,
         });

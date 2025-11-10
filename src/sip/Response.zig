@@ -24,19 +24,19 @@ content_length: u32 = 0,
 
 body: []const u8 = "",
 
-pub fn init(allocator: mem.Allocator) Response {
+pub fn init() Response {
     return .{
-        .via = ArrayList(headers.ViaHeader).init(allocator),
+        .via = ArrayList(headers.ViaHeader).empty,
         .call_id = "",
-        .contact = ArrayList(headers.ContactHeader).init(allocator),
-        .allow = ArrayList(headers.Method).init(allocator),
+        .contact = ArrayList(headers.ContactHeader).empty,
+        .allow = ArrayList(headers.Method).empty,
     };
 }
 
-pub fn deinit(self: *Response) void {
-    self.via.deinit();
-    self.contact.deinit();
-    self.allow.deinit();
+pub fn deinit(self: *Response, allocator: mem.Allocator) void {
+    self.via.deinit(allocator);
+    self.contact.deinit(allocator);
+    self.allow.deinit(allocator);
 }
 
 pub fn encode(self: Response, writer: anytype) !void {

@@ -43,9 +43,9 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         }
 
         const remote_address = try getAddressAndPort(allocator, client_addr);
-        var request = Request.init(allocator);
-        defer request.deinit();
-        try request.parse(message);
+        var request = Request.init();
+        defer request.deinit(allocator);
+        try request.parse(allocator, message);
 
         //Check to see if a session exists for the remote address, if not create one
         if (!sessions.contains(remote_address)) {
@@ -60,29 +60,27 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
 
         //Process the message for the session
         const session = sessions.getPtr(remote_address) orelse unreachable;
-        var response = Response.init(allocator);
-        defer response.deinit();
+        var response = Response.init();
+        defer response.deinit(allocator);
 
         try session.handleMessage(request, &response);
 
         //Write the response back to the client
-        var response_builder = std.ArrayList(u8).init(allocator);
-        defer response_builder.deinit();
-        const writer = response_builder.writer();
+        var response_buffer = std.io.Writer.Allocating.init(allocator);
 
-        try response.encode(writer);
+        try response.encode(&response_buffer.writer);
         debug.print("Request: [{s}]\n", .{message});
-        debug.print("Response: [{s}]\n", .{response_builder.items});
-        _ = try posix.sendto(socket, response_builder.items, 0, &client_addr, client_addr_len);
+        debug.print("Response: [{s}]\n", .{response_buffer.written()});
+        _ = try posix.sendto(socket, response_buffer.written(), 0, &client_addr, client_addr_len);
     }
 }
 
 pub fn getAddressAndPort(allocator: mem.Allocator, addr: posix.sockaddr) ![]const u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
-    const writer = buffer.writer();
+    const buffer = try allocator.alloc(u8, 512);
+    var writer = std.io.Writer.fixed(buffer);
 
     const address = net.Address.initPosix(@alignCast(&addr));
-    try address.format("", .{}, writer);
+    try address.format(&writer);
 
-    return buffer.toOwnedSlice();
+    return writer.buffered(); //TODO unsure about this....
 }

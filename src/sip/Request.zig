@@ -29,18 +29,23 @@ supported: ArrayList(headers.Extension),
 
 body: []const u8 = "",
 
-pub fn init(alloactor: mem.Allocator) Request {
-    return Request{ .via = ArrayList(headers.ViaHeader).init(alloactor), .contact = ArrayList(headers.ContactHeader).init(alloactor), .allow = ArrayList(headers.Method).init(alloactor), .supported = ArrayList(headers.Extension).init(alloactor) };
+pub fn init() Request {
+    return Request{
+        .via = ArrayList(headers.ViaHeader).empty,
+        .contact = ArrayList(headers.ContactHeader).empty,
+        .allow = ArrayList(headers.Method).empty,
+        .supported = ArrayList(headers.Extension).empty,
+    };
 }
 
-pub fn deinit(self: Request) void {
-    self.via.deinit();
-    self.contact.deinit();
-    self.allow.deinit();
-    self.supported.deinit();
+pub fn deinit(self: *Request, allocator: mem.Allocator) void {
+    self.via.deinit(allocator);
+    self.contact.deinit(allocator);
+    self.allow.deinit(allocator);
+    self.supported.deinit(allocator);
 }
 
-pub fn parse(self: *Request, message_text: []const u8) !void {
+pub fn parse(self: *Request, allocator: mem.Allocator, message_text: []const u8) !void {
     var lines = std.mem.splitSequence(u8, message_text, "\r\n");
     const first_line = lines.next() orelse return RequestError.InvalidMessage;
 
@@ -69,7 +74,7 @@ pub fn parse(self: *Request, message_text: []const u8) !void {
         switch (header_field) {
             .via => {
                 const via = try headers.ViaHeader.parse(value);
-                try self.via.append(via);
+                try self.via.append(allocator, via);
             },
             .max_forwards => self.max_forwards = try std.fmt.parseInt(u32, value, 10),
             .from => self.from = try headers.FromHeader.parse(value),
@@ -79,14 +84,14 @@ pub fn parse(self: *Request, message_text: []const u8) !void {
             .user_agent => self.user_agent = value,
             .contact => {
                 const contact = try headers.ContactHeader.parse(value);
-                try self.contact.append(contact);
+                try self.contact.append(allocator, contact);
             },
             .expires => self.expires = try std.fmt.parseInt(u32, value, 10),
             .allow => {
                 var iter = std.mem.tokenizeScalar(u8, value, ',');
                 while (iter.next()) |method_text| {
                     const trimmed = mem.trim(u8, method_text, " ");
-                    try self.allow.append(try headers.Method.fromString(trimmed));
+                    try self.allow.append(allocator, try headers.Method.fromString(trimmed));
                 }
             },
             .content_length => self.content_length = try std.fmt.parseInt(u32, value, 10),
@@ -95,7 +100,7 @@ pub fn parse(self: *Request, message_text: []const u8) !void {
                 var iter = std.mem.tokenizeScalar(u8, value, ',');
                 while (iter.next()) |extension_text| {
                     const trimmed = mem.trim(u8, extension_text, " ");
-                    try self.supported.append(try headers.Extension.fromString(trimmed));
+                    try self.supported.append(allocator, try headers.Extension.fromString(trimmed));
                 }
             },
         }
