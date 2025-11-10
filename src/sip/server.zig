@@ -60,10 +60,9 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
 
         //Process the message for the session
         const session = sessions.getPtr(remote_address) orelse unreachable;
-        var response = Response.init();
-        defer response.deinit(allocator);
 
-        try session.handleMessage(request, &response);
+        var response = try session.handleMessage(request) orelse continue;
+        defer response.deinit(allocator);
 
         //Write the response back to the client
         var response_buffer = std.io.Writer.Allocating.init(allocator);

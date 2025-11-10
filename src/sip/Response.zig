@@ -4,6 +4,7 @@ const mem = std.mem;
 const fmt = std.fmt;
 const ArrayList = std.ArrayList;
 const headers = @import("./headers.zig");
+const Request = @import("./Request.zig");
 
 const ResponseError = error{
     FieldRequired,
@@ -31,6 +32,24 @@ pub fn init() Response {
         .contact = ArrayList(headers.ContactHeader).empty,
         .allow = ArrayList(headers.Method).empty,
     };
+}
+
+/// Fill common response headers from a request
+pub fn initFromRequest(allocator: mem.Allocator, request: Request) !Response {
+    var response = init();
+
+    //TODO add some validation for call_id and out of order sequences
+    //These fields have consistent responses across all methods
+    for (request.via.items) |via| {
+        try response.via.append(allocator, via);
+    }
+    response.to = request.to;
+    response.to.?.tag = "server-tag"; //TODO we need to make sure this is always present, validate in parse or seperate function
+    response.from = request.from;
+    response.call_id = request.call_id;
+    response.sequence = request.sequence;
+
+    return response;
 }
 
 pub fn deinit(self: *Response, allocator: mem.Allocator) void {

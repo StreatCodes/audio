@@ -34,29 +34,22 @@ pub fn deinit(self: *Session) void {
     self.supported_methods.deinit();
 }
 
-/// Accepts a SIP request for an established session and returns a response.
-/// All SIP messages will get routed through this to the appropriate handler
-/// for that method
-pub fn handleMessage(self: *Session, request: Request, response: *Response) !void {
-    //TODO add some validation for call_id and out of order sequences
-    //These fields have consistent responses across all methods
-    for (request.via.items) |via| {
-        try response.via.append(self.allocator, via);
-    }
-    response.to = request.to;
-    response.to.?.tag = "server-tag"; //TODO we need to make sure this is always present, validate in parse or seperate function
-    response.from = request.from;
-    response.call_id = request.call_id;
-    response.sequence = request.sequence;
-
-    //Handle the different request methods
+/// Accepts a SIP request for an established session and returns a response
+/// if one should be sent back to the client. It is the callers responsibility
+/// to clean up the response if one is returned. All SIP messages will get
+/// routed through this to the appropriate handler for that method
+pub fn handleMessage(self: *Session, request: Request) !?Response {
     switch (request.method) {
-        .register => try self.handleRegister(request, response),
-        else => try self.handleUnknown(request, response),
+        .register => return try self.handleRegister(request),
+        .ack => return null, //Do nothing
+        else => return try self.handleUnknown(request),
     }
 }
 
-fn handleRegister(self: *Session, request: Request, response: *Response) !void {
+fn handleRegister(self: *Session, request: Request) !Response {
+    var response = try Response.initFromRequest(self.allocator, request);
+    errdefer response.deinit(self.allocator);
+
     debug.print("REGISTER - session update\n", .{});
     const new_session = self.call_id.len == 0;
 
@@ -90,12 +83,15 @@ fn handleRegister(self: *Session, request: Request, response: *Response) !void {
             .expires = request.expires,
         });
     }
+
+    return response;
 }
 
-fn handleUnknown(self: Session, request: Request, response: *Response) !void {
-    _ = self;
-    _ = request;
+fn handleUnknown(self: Session, request: Request) !Response {
+    var response = try Response.initFromRequest(self.allocator, request);
     response.status = .not_implemented;
+
+    return response;
 }
 
 test "Server creates new session from REGISTER request" {
