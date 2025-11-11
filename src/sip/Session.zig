@@ -2,6 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 const debug = std.debug;
 const testing = std.testing;
+const posix = std.posix;
 const Response = @import("./Response.zig");
 const Request = @import("./Request.zig");
 const headers = @import("./headers.zig");
@@ -12,6 +13,12 @@ const SessionError = error{
     BadRequest,
 };
 
+const SocketInfo = struct {
+    socket: posix.socket_t,
+    address: posix.sockaddr,
+    address_len: posix.socklen_t,
+};
+
 allocator: mem.Allocator,
 sequence: u32 = 0,
 /// Epoch time in milliseconds when the session is due to expire
@@ -19,12 +26,14 @@ expires: i64 = 0,
 call_id: []u8 = "",
 contacts: ArrayList(headers.Contact),
 supported_methods: ArrayList(headers.Method),
+socket_info: SocketInfo,
 
-pub fn init(allocator: mem.Allocator) Session {
+pub fn init(allocator: mem.Allocator, socket_info: SocketInfo) Session {
     return Session{
         .allocator = allocator,
         .contacts = ArrayList(headers.Contact).empty,
         .supported_methods = ArrayList(headers.Method).empty,
+        .socket_info = socket_info,
     };
 }
 
@@ -34,21 +43,31 @@ pub fn deinit(self: *Session) void {
     self.supported_methods.deinit();
 }
 
+/// Sends a response back to the session's client
+pub fn sendResponse(self: Session, response: Response) !void {
+    var response_buffer = std.io.Writer.Allocating.init(self.allocator);
+    try response.encode(&response_buffer.writer);
+
+    debug.print("Response: [{s}]\n", .{response_buffer.written()});
+    _ = try posix.sendto(self.socket_info.socket, response_buffer.written(), 0, &self.socket_info.address, self.socket_info.address_len);
+}
+
 /// Accepts a SIP request for an established session and returns a response
 /// if one should be sent back to the client. It is the callers responsibility
 /// to clean up the response if one is returned. All SIP messages will get
 /// routed through this to the appropriate handler for that method
-pub fn handleMessage(self: *Session, request: Request) !?Response {
+pub fn handleMessage(self: *Session, request: Request) !void {
     switch (request.method) {
-        .register => return try self.handleRegister(request),
-        .ack => return null, //Do nothing
-        else => return try self.handleUnknown(request),
+        .register => try self.handleRegister(request),
+        // .invite => //TODO this request can send multiple responses. we need a mechanism to send more than 1 response for this "dialog"
+        .ack => {}, //Do nothing
+        else => try self.handleUnknown(request),
     }
 }
 
-fn handleRegister(self: *Session, request: Request) !Response {
+fn handleRegister(self: *Session, request: Request) !void {
     var response = try Response.initFromRequest(self.allocator, request);
-    errdefer response.deinit(self.allocator);
+    defer response.deinit(self.allocator);
 
     debug.print("REGISTER - session update\n", .{});
     const new_session = self.call_id.len == 0;
@@ -84,14 +103,15 @@ fn handleRegister(self: *Session, request: Request) !Response {
         });
     }
 
-    return response;
+    try self.sendResponse(response);
 }
 
-fn handleUnknown(self: Session, request: Request) !Response {
+fn handleUnknown(self: Session, request: Request) !void {
     var response = try Response.initFromRequest(self.allocator, request);
+    defer response.deinit(self.allocator);
     response.status = .not_implemented;
 
-    return response;
+    try self.sendResponse(response);
 }
 
 test "Server creates new session from REGISTER request" {

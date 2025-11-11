@@ -37,10 +37,8 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         const message = std.mem.trimLeft(u8, buf[0..recv_bytes], "\r\n");
 
         //Clients often send empty messages (\r\n) for keep alives, ignore them
-        if (message.len == 0) {
-            debug.print("Empty message, skipping\n", .{});
-            continue;
-        }
+        if (message.len == 0) continue;
+        debug.print("Request: [{s}]\n", .{message});
 
         const remote_address = try getAddressAndPort(allocator, client_addr);
         var request = Request.init();
@@ -54,23 +52,18 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
                 continue;
             }
 
-            const session = Session.init(allocator);
+            const session = Session.init(allocator, .{
+                .socket = socket,
+                .address = client_addr,
+                .address_len = client_addr_len,
+            });
             try sessions.put(remote_address, session);
         }
 
         //Process the message for the session
         const session = sessions.getPtr(remote_address) orelse unreachable;
 
-        var response = try session.handleMessage(request) orelse continue;
-        defer response.deinit(allocator);
-
-        //Write the response back to the client
-        var response_buffer = std.io.Writer.Allocating.init(allocator);
-
-        try response.encode(&response_buffer.writer);
-        debug.print("Request: [{s}]\n", .{message});
-        debug.print("Response: [{s}]\n", .{response_buffer.written()});
-        _ = try posix.sendto(socket, response_buffer.written(), 0, &client_addr, client_addr_len);
+        try session.handleMessage(request);
     }
 }
 
