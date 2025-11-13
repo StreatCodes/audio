@@ -45,6 +45,22 @@ pub fn deinit(self: *Request, allocator: mem.Allocator) void {
     self.supported.deinit(allocator);
 }
 
+pub fn dupe(self: Request, allocator: mem.Allocator) !Request {
+    var new_request = self;
+
+    new_request.via = ArrayList(headers.ViaHeader).empty;
+    new_request.contact = ArrayList(headers.ContactHeader).empty;
+    new_request.allow = ArrayList(headers.Method).empty;
+    new_request.supported = ArrayList(headers.Extension).empty;
+
+    try new_request.via.appendSlice(allocator, self.via.items);
+    try new_request.contact.appendSlice(allocator, self.contact.items);
+    try new_request.allow.appendSlice(allocator, self.allow.items);
+    try new_request.supported.appendSlice(allocator, self.supported.items);
+
+    return new_request;
+}
+
 pub fn parse(self: *Request, allocator: mem.Allocator, message_text: []const u8) !void {
     var lines = std.mem.splitSequence(u8, message_text, "\r\n");
     const first_line = lines.next() orelse return RequestError.InvalidMessage;
