@@ -100,19 +100,23 @@ pub fn encode(self: Response, writer: anytype) !void {
 }
 
 pub const StatusCode = enum(u32) {
+    trying = 100,
     ok = 200,
     bad_request = 400,
     unauthorized = 401,
     forbidden = 403,
+    not_found = 404,
     internal_error = 500,
     not_implemented = 501,
 
     fn toString(self: StatusCode) []const u8 {
         switch (self) {
+            .trying => return "Trying",
             .ok => return "OK",
             .bad_request => return "Bad Request",
             .unauthorized => return "Unauthorized",
             .forbidden => return "Forbidden",
+            .not_found => return "Not Found",
             .internal_error => return "Server Internal Error",
             .not_implemented => return "Not Implemented",
         }

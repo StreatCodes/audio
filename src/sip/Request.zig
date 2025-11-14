@@ -6,6 +6,7 @@ const ArrayList = std.ArrayList;
 
 pub const RequestError = error{
     InvalidMessage,
+    FieldRequired,
 };
 
 const Request = @This();
@@ -123,6 +124,88 @@ pub fn parse(self: *Request, allocator: mem.Allocator, message_text: []const u8)
     }
 
     self.body = lines.rest();
+}
+
+pub fn encode(self: Request, writer: *std.io.Writer) !void {
+    try writer.print("{s} {s} SIP/2.0\r\n", .{ self.method.toString(), self.uri });
+    for (self.via.items) |via| {
+        try writer.print("{s}: ", .{headers.Header.via.toString()});
+        try via.encode(writer);
+    }
+
+    try writer.print("{d}\r\n", .{self.max_forwards});
+
+    if (self.from) |from| {
+        try writer.print("{s}: ", .{headers.Header.from.toString()});
+        try from.encode(writer);
+    } else {
+        return RequestError.FieldRequired;
+    }
+
+    if (self.to) |to| {
+        try writer.print("{s}: ", .{headers.Header.to.toString()});
+        try to.encode(writer);
+    } else {
+        return RequestError.FieldRequired;
+    }
+
+    try writer.print("{s}: ", .{headers.Header.call_id.toString()});
+    try writer.print("{s}\r\n", .{self.call_id});
+
+    if (self.sequence) |sequence| {
+        try writer.print("{s}: ", .{headers.Header.cseq.toString()});
+        try sequence.encode(writer);
+    } else {
+        return RequestError.FieldRequired;
+    }
+
+    if (self.user_agent) |user_agent| {
+        try writer.print("{s}: ", .{headers.Header.user_agent.toString()});
+        try writer.print("{s}\r\n", .{user_agent});
+    } else {
+        return RequestError.FieldRequired;
+    }
+
+    for (self.contact.items) |contact| {
+        try writer.print("{s}: ", .{headers.Header.contact.toString()});
+        try contact.encode(writer);
+    }
+
+    // TODO expires - may require making the field optional
+
+    if (self.allow.items.len > 0) {
+        try writer.print("{s}: ", .{headers.Header.allow.toString()});
+        for (self.allow.items, 0..) |allow, index| {
+            try writer.writeAll(allow.toString());
+            if (index < self.allow.items.len - 1) {
+                try writer.writeAll(", ");
+            } else {
+                try writer.writeAll("\r\n");
+            }
+        }
+    }
+
+    if (self.supported.items.len > 0) {
+        try writer.print("{s}: ", .{headers.Header.supported.toString()});
+        for (self.supported.items, 0..) |supported, index| {
+            try writer.writeAll(supported.toString());
+            if (index < self.supported.items.len - 1) {
+                try writer.writeAll(", ");
+            } else {
+                try writer.writeAll("\r\n");
+            }
+        }
+    }
+
+    if (self.content_type) |content_type| {
+        try writer.print("{s}: {s}\r\n", .{ headers.Header.content_type.toString(), content_type });
+    }
+
+    try writer.print("{s}: {d}\r\n", .{ headers.Header.content_length.toString(), self.content_length });
+
+    try writer.writeAll("\r\n");
+    try writer.writeAll(self.body);
+    //TODO do i need to write /r/n next?
 }
 
 test "sip can correctly parse a SIP REGISTER message" {

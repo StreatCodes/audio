@@ -166,6 +166,12 @@ pub const Contact = struct {
         }
         _ = try writer.writeByte('>');
     }
+
+    //streats@192.168.1.130
+    //TODO handle optional port!
+    pub fn identity(self: Contact, allocator: std.mem.Allocator) ![]const u8 {
+        return try fmt.allocPrint(allocator, "{s}@{s}", .{ self.user, self.host });
+    }
 };
 
 test "Contact can parse with no name or angled brackets" {

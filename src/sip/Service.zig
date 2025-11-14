@@ -34,7 +34,7 @@ pub fn deinit(self: *Service) void {
 pub fn handleMessage(self: *Service, connection: Connection, request: Request) !void {
     switch (request.method) {
         .register => try self.handleRegister(connection, request),
-        .invite => try self.handleInvite(request),
+        .invite => try self.handleInvite(connection, request),
         .ack => {}, //Do nothing
         else => try self.handleUnknown(connection, request),
     }
@@ -83,18 +83,39 @@ fn handleRegister(self: *Service, connection: Connection, request: Request) !voi
     try session.sendResponse(response);
 }
 
-fn handleInvite(self: *Service, request: Request) !void {
-    const new_request = try request.dupe(self.allocator);
-    _ = new_request;
+fn handleInvite(self: *Service, connection: Connection, request: Request) !void {
+    const address = connection.getAddressAndPort(self.allocator) catch return Request.RequestError.InvalidMessage;
+    const session = self.sessions.get(address) orelse return Session.SessionError.NotFound;
 
-    //TODO check incoming request is registered user!!!!
-    //Process the message for the session
-    // const session = sessions.getPtr(remote_address) orelse unreachable;
+    // Let the send know we're trying to call the recipient
+    var trying_response = try Response.initFromRequest(self.allocator, request);
+    defer trying_response.deinit(self.allocator);
+    trying_response.status = .trying;
+    try session.sendResponse(trying_response);
 
-    // look up the user in the registrar
-    //if available send duplicated request to them with updated fields
-    //if not return 404
+    // Look up recipient
+    // TODO maybe a better way
+    const to_contact = request.to orelse return Request.RequestError.InvalidMessage;
+    const to_identity = try to_contact.contact.identity(self.allocator);
+    defer self.allocator.free(to_identity);
 
+    var recipient_session: ?Session = null;
+    var sessions_iter = self.sessions.valueIterator();
+    while (sessions_iter.next()) |sesh| {
+        if (std.mem.eql(u8, sesh.identity, to_identity)) {
+            recipient_session = sesh.*;
+        }
+    }
+
+    if (recipient_session == null) return Session.SessionError.NotFound;
+
+    var new_request = try request.dupe(self.allocator);
+    new_request.max_forwards -= 1;
+    // TODO append server via. make this a function on Request
+    // TODO add record route. make this a function on Request
+    // TODO check max_forwards less than one. make this a function on Request
+
+    try recipient_session.?.sendRequest(new_request);
 }
 
 fn handleUnknown(self: Service, connection: Connection, request: Request) !void {

@@ -58,6 +58,9 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         defer request.deinit(allocator);
         try request.parse(allocator, message);
 
-        try service.handleMessage(connection, request);
+        service.handleMessage(connection, request) catch |err| {
+            //TODO switch on error? and return the correct response to the client
+            debug.print("Error {any} in message, respond to client with correct code.\n", .{err});
+        };
     }
 }
