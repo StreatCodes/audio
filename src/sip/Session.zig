@@ -11,7 +11,8 @@ const ArrayList = std.ArrayList;
 const Session = @This();
 
 pub const SessionError = error{
-    NotFound,
+    NotRegistered,
+    RecipientNotFound,
 };
 
 allocator: mem.Allocator,
@@ -38,8 +39,8 @@ pub fn init(allocator: mem.Allocator, connection: Connection, request: Request) 
 pub fn deinit(self: *Session) void {
     self.allocator.free(self.call_id);
     self.allocator.free(self.identity);
-    self.contacts.deinit();
-    self.supported_methods.deinit();
+    self.contacts.deinit(self.allocator);
+    self.supported_methods.deinit(self.allocator);
 }
 
 /// Sends a response to the session's client

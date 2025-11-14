@@ -1,5 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
+const fmt = std.fmt;
 const debug = std.debug;
 const posix = std.posix;
 const testing = std.testing;
@@ -27,6 +28,23 @@ pub fn deinit(self: *Service) void {
     self.sessions.deinit();
 }
 
+pub fn sessionFromRequest(self: Service, request: Request) !?*Session {
+    const session_id = try request.from.contact.identity(self.allocator);
+    defer self.allocator.free(session_id);
+    return self.sessions.getPtr(session_id);
+}
+
+pub fn findSessionFromId(self: Service, id: []const u8) ?Session {
+    var session: ?Session = null;
+    var sessions_iter = self.sessions.valueIterator();
+    while (sessions_iter.next()) |sesh| {
+        if (std.mem.eql(u8, sesh.identity, id)) {
+            session = sesh.*;
+        }
+    }
+    return session;
+}
+
 /// Accepts a SIP request for an established session and returns a response
 /// if one should be sent back to the client. It is the callers responsibility
 /// to clean up the response if one is returned. All SIP messages will get
@@ -34,28 +52,22 @@ pub fn deinit(self: *Service) void {
 pub fn handleMessage(self: *Service, connection: Connection, request: Request) !void {
     switch (request.method) {
         .register => try self.handleRegister(connection, request),
-        .invite => try self.handleInvite(connection, request),
+        .invite => try self.handleInvite(request),
         .ack => {}, //Do nothing
-        else => try self.handleUnknown(connection, request),
+        else => try self.handleUnknown(request),
     }
 }
 
 fn handleRegister(self: *Service, connection: Connection, request: Request) !void {
-    const address = try connection.getAddressAndPort(self.allocator);
-    var session: *Session = undefined;
+    const session_id = try request.from.contact.identity(self.allocator);
 
     //Check to see if a session exists for the remote address, if not create one
-    if (!self.sessions.contains(address)) {
-        debug.print("REGISTER - session created\n", .{});
+    var session = try self.sessionFromRequest(request) orelse blk: {
+        debug.print("REGISTER - {s} session created\n", .{session_id});
         var new_session = try Session.init(self.allocator, connection, request);
-        try self.sessions.put(address, new_session);
-        session = &new_session;
-    } else {
-        debug.print("REGISTER - session update\n", .{});
-        defer self.allocator.free(address);
-        session = self.sessions.getPtr(address) orelse unreachable;
-        //validate call-id is eql - apparently this is not necessary
-    }
+        try self.sessions.put(session_id, new_session);
+        break :blk &new_session;
+    };
 
     const session_duration: i64 = @intCast(request.expires * 1000);
     session.expires = std.time.milliTimestamp() + session_duration;
@@ -83,9 +95,8 @@ fn handleRegister(self: *Service, connection: Connection, request: Request) !voi
     try session.sendResponse(response);
 }
 
-fn handleInvite(self: *Service, connection: Connection, request: Request) !void {
-    const address = connection.getAddressAndPort(self.allocator) catch return Request.RequestError.InvalidMessage;
-    const session = self.sessions.get(address) orelse return Session.SessionError.NotFound;
+fn handleInvite(self: *Service, request: Request) !void {
+    const session = try self.sessionFromRequest(request) orelse return Session.SessionError.NotRegistered;
 
     // Let the send know we're trying to call the recipient
     var trying_response = try Response.initFromRequest(self.allocator, request);
@@ -99,30 +110,23 @@ fn handleInvite(self: *Service, connection: Connection, request: Request) !void 
     const to_identity = try to_contact.contact.identity(self.allocator);
     defer self.allocator.free(to_identity);
 
-    var recipient_session: ?Session = null;
-    var sessions_iter = self.sessions.valueIterator();
-    while (sessions_iter.next()) |sesh| {
-        if (std.mem.eql(u8, sesh.identity, to_identity)) {
-            recipient_session = sesh.*;
-        }
-    }
-
-    if (recipient_session == null) return Session.SessionError.NotFound;
+    var recipient_session = self.findSessionFromId(to_identity) orelse {
+        return Session.SessionError.RecipientNotFound;
+    };
 
     var new_request = try request.dupe(self.allocator);
     new_request.max_forwards -= 1;
+    // TODO we may need to modify the URI too...
     // TODO append server via. make this a function on Request
     // TODO add record route. make this a function on Request
     // TODO check max_forwards less than one. make this a function on Request
 
-    try recipient_session.?.sendRequest(new_request);
+    try recipient_session.sendRequest(new_request);
 }
 
-fn handleUnknown(self: Service, connection: Connection, request: Request) !void {
-    const address = try connection.getAddressAndPort(self.allocator);
-    const session = self.sessions.get(address) orelse unreachable; //TODO return bad request here
+fn handleUnknown(self: Service, request: Request) !void {
+    const session = try self.sessionFromRequest(request) orelse return Session.SessionError.NotRegistered;
 
-    //TODO check incoming request is registered user!!!!
     //Process the message for the session
     // const session = sessions.getPtr(remote_address) orelse unreachable;
     var response = try Response.initFromRequest(self.allocator, request);

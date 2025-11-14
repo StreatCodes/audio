@@ -16,7 +16,7 @@ uri: []const u8 = "",
 
 via: ArrayList(headers.ViaHeader),
 max_forwards: u32 = 70,
-from: ?headers.FromHeader = null,
+from: headers.FromHeader = undefined,
 to: ?headers.ToHeader = null,
 call_id: []const u8 = "",
 sequence: ?headers.Sequence = null,
@@ -135,12 +135,8 @@ pub fn encode(self: Request, writer: *std.io.Writer) !void {
 
     try writer.print("{d}\r\n", .{self.max_forwards});
 
-    if (self.from) |from| {
-        try writer.print("{s}: ", .{headers.Header.from.toString()});
-        try from.encode(writer);
-    } else {
-        return RequestError.FieldRequired;
-    }
+    try writer.print("{s}: ", .{headers.Header.from.toString()});
+    try self.from.encode(writer);
 
     if (self.to) |to| {
         try writer.print("{s}: ", .{headers.Header.to.toString()});

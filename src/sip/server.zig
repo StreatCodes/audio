@@ -8,15 +8,16 @@ const Response = @import("./Response.zig");
 const Request = @import("./Request.zig");
 const headers = @import("./headers.zig");
 const Service = @import("./Service.zig");
+const Session = @import("./Session.zig");
 
 pub const Connection = struct {
     socket: posix.socket_t,
     address: posix.sockaddr,
     address_len: posix.socklen_t,
 
-    pub fn getAddressAndPort(self: Connection, allocator: mem.Allocator) ![]const u8 {
+    pub fn getAddressAndPort(self: Connection, allocator: mem.Allocator, user: []const u8) ![]const u8 {
         const address = net.Address.initPosix(@alignCast(&self.address));
-        return try std.fmt.allocPrint(allocator, "{f}", .{address}); //TODO append port???
+        return try std.fmt.allocPrint(allocator, "{s}@{f}", .{ user, address });
     }
 };
 
@@ -59,8 +60,31 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         try request.parse(allocator, message);
 
         service.handleMessage(connection, request) catch |err| {
-            //TODO switch on error? and return the correct response to the client
-            debug.print("Error {any} in message, respond to client with correct code.\n", .{err});
+            switch (err) {
+                Session.SessionError.NotRegistered => {
+                    // TODO this error handling can fail and crash the server
+                    // This error is for cases where a session wasn't found. Create a temporary one to send a response.
+                    const id = try request.from.contact.identity(allocator);
+                    defer allocator.free(id);
+                    debug.print("Recieved message from unregistered client {s}\n", .{id});
+                    var temp_session = try Session.init(allocator, connection, request);
+                    defer temp_session.deinit();
+
+                    var response = try Response.initFromRequest(allocator, request);
+                    response.status = .forbidden;
+                    try temp_session.sendResponse(response);
+                },
+                Session.SessionError.RecipientNotFound => {
+                    const session = try service.sessionFromRequest(request) orelse unreachable;
+
+                    var response = try Response.initFromRequest(allocator, request);
+                    response.status = .not_found;
+                    try session.sendResponse(response);
+                },
+                else => {
+                    debug.print("Unknown error\n", .{});
+                },
+            }
         };
     }
 }
