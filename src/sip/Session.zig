@@ -11,6 +11,7 @@ const ArrayList = std.ArrayList;
 const Session = @This();
 
 pub const SessionError = error{
+    InvalidSession,
     NotRegistered,
     RecipientNotFound,
 };
@@ -20,17 +21,20 @@ allocator: mem.Allocator,
 expires: i64 = 0,
 identity: []const u8,
 call_id: []u8 = "",
-contacts: ArrayList(headers.Contact),
-supported_methods: ArrayList(headers.Method),
+contact: headers.Contact,
 connection: Connection,
 
 pub fn init(allocator: mem.Allocator, connection: Connection, request: Request) !Session {
     const to = request.to orelse return Request.RequestError.InvalidMessage;
+
+    if (request.contact.items.len == 0) {
+        return SessionError.InvalidSession;
+    }
+
     return Session{
         .allocator = allocator,
         .identity = try to.contact.identity(allocator),
-        .contacts = ArrayList(headers.Contact).empty,
-        .supported_methods = ArrayList(headers.Method).empty,
+        .contact = request.contact.items[0].contact,
         .connection = connection,
         .call_id = try allocator.dupe(u8, request.call_id),
     };
@@ -39,8 +43,6 @@ pub fn init(allocator: mem.Allocator, connection: Connection, request: Request) 
 pub fn deinit(self: *Session) void {
     self.allocator.free(self.call_id);
     self.allocator.free(self.identity);
-    self.contacts.deinit(self.allocator);
-    self.supported_methods.deinit(self.allocator);
 }
 
 /// Sends a response to the session's client

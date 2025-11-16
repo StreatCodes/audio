@@ -19,6 +19,15 @@ pub const Connection = struct {
         const address = net.Address.initPosix(@alignCast(&self.address));
         return try std.fmt.allocPrint(allocator, "{s}@{f}", .{ user, address });
     }
+
+    pub fn getUri(self: Connection, allocator: std.mem.Allocator, user: []const u8) !std.Uri {
+        const base_uri = try self.getAddressAndPort(allocator, user);
+        defer allocator.free(base_uri);
+        var uri = try std.Uri.parse(base_uri);
+        uri.scheme = "sip";
+
+        return uri;
+    }
 };
 
 const UDP_MAX_PAYLOAD = 65507;
@@ -34,7 +43,7 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
     try posix.bind(socket, &address.any, address.getOsSockLen());
     debug.print("Listening {s}:{d}\n", .{ listen_address, listen_port });
 
-    var service = Service.init(allocator);
+    var service = try Service.init(allocator);
     defer service.deinit();
 
     //Wait for incoming datagrams and process them

@@ -4,6 +4,7 @@ const fmt = std.fmt;
 const debug = std.debug;
 const posix = std.posix;
 const testing = std.testing;
+const headers = @import("./headers.zig");
 const Request = @import("./Request.zig");
 const Response = @import("./Response.zig");
 const Session = @import("./Session.zig");
@@ -12,13 +13,25 @@ const Connection = @import("./server.zig").Connection;
 const Service = @This();
 const Sessions = std.StringHashMap(Session);
 
+const ServiceError = error{
+    MaxForwardsExceeded,
+};
+
 allocator: std.mem.Allocator,
 sessions: Sessions,
+branch: []const u8,
 
-pub fn init(allocator: mem.Allocator) Service {
+pub fn init(allocator: mem.Allocator) !Service {
+    const prefix = "z9hG4bK";
+    var random_data: [20]u8 = undefined;
+
+    var prng = std.Random.DefaultPrng.init(1337);
+    prng.fill(&random_data);
+
     return Service{
         .allocator = allocator,
         .sessions = Sessions.init(allocator),
+        .branch = try fmt.allocPrint(allocator, "{s}{x}", .{ prefix, random_data }),
     };
 }
 
@@ -26,6 +39,7 @@ pub fn deinit(self: *Service) void {
     //TODO iterate all the session keys and deinit them
     //TODO iterate all the sessions and deinit them
     self.sessions.deinit();
+    self.allocator.free(self.branch);
 }
 
 pub fn sessionFromRequest(self: Service, request: Request) !?*Session {
@@ -43,6 +57,14 @@ pub fn findSessionFromId(self: Service, id: []const u8) ?Session {
         }
     }
     return session;
+}
+
+pub fn serverAddress(self: Service) headers.Address {
+    _ = self;
+    return headers.Address{
+        .host = "localhost", //TODO do not hard code this!
+        .port = 5060, //TODO do not hard code this!
+    };
 }
 
 /// Accepts a SIP request for an established session and returns a response
@@ -71,15 +93,6 @@ fn handleRegister(self: *Service, connection: Connection, request: Request) !voi
 
     const session_duration: i64 = @intCast(request.expires * 1000);
     session.expires = std.time.milliTimestamp() + session_duration;
-
-    session.contacts.clearRetainingCapacity();
-    for (request.contact.items) |contact_header| {
-        try session.contacts.append(self.allocator, contact_header.contact);
-    }
-    session.contacts.clearRetainingCapacity();
-    for (request.allow.items) |allowed_method| {
-        try session.supported_methods.append(self.allocator, allowed_method);
-    }
 
     var response = try Response.initFromRequest(self.allocator, request);
     defer response.deinit(self.allocator);
@@ -116,10 +129,23 @@ fn handleInvite(self: *Service, request: Request) !void {
 
     var new_request = try request.dupe(self.allocator);
     new_request.max_forwards -= 1;
-    // TODO we may need to modify the URI too...
-    // TODO append server via. make this a function on Request
-    // TODO add record route. make this a function on Request
-    // TODO check max_forwards less than one. make this a function on Request
+    // TODO update the URI line
+    // std.debug.print("Contact: {any}\n", .{recipient_session.contact});
+    // new_request.uri = try recipient_session.connection.getUri(self.allocator, recipient_session.contact.user);
+
+    try new_request.via.insert(self.allocator, 0, .{
+        .protocol = .udp,
+        .address = self.serverAddress(),
+        .branch = self.branch,
+    });
+    new_request.record_route = .{
+        .address = self.serverAddress(),
+        .lr = true,
+    };
+
+    if (new_request.max_forwards < 0) {
+        return ServiceError.MaxForwardsExceeded;
+    }
 
     try recipient_session.sendRequest(new_request);
 }
@@ -156,7 +182,7 @@ test "Server creates new session from REGISTER request" {
 
     var response = Response.init(testing.allocator);
     defer response.deinit();
-    var session = Service.init(testing.allocator);
+    var session = try Service.init(testing.allocator);
     defer session.deinit();
     try session.handleMessage(request, &response);
 

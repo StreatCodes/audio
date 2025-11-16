@@ -12,7 +12,7 @@ pub const RequestError = error{
 const Request = @This();
 
 method: headers.Method = .register,
-uri: []const u8 = "",
+uri: std.Uri,
 
 via: ArrayList(headers.ViaHeader),
 max_forwards: u32 = 70,
@@ -23,6 +23,7 @@ sequence: ?headers.Sequence = null,
 user_agent: ?[]const u8 = null,
 contact: ArrayList(headers.ContactHeader),
 expires: u32 = 300,
+record_route: ?headers.RecordRoute = null,
 allow: ArrayList(headers.Method),
 content_length: u32 = 0,
 content_type: ?[]const u8 = null,
@@ -32,6 +33,7 @@ body: []const u8 = "",
 
 pub fn init() Request {
     return Request{
+        .uri = undefined,
         .via = ArrayList(headers.ViaHeader).empty,
         .contact = ArrayList(headers.ContactHeader).empty,
         .allow = ArrayList(headers.Method).empty,
@@ -74,7 +76,7 @@ pub fn parse(self: *Request, allocator: mem.Allocator, message_text: []const u8)
     const version = first_line_values.next() orelse return RequestError.InvalidMessage;
 
     self.method = try headers.Method.fromString(method);
-    self.uri = uri;
+    self.uri = try std.Uri.parse(uri);
     if (!std.mem.eql(u8, version, "SIP/2.0")) return RequestError.InvalidMessage;
 
     //Parse the headers
@@ -99,6 +101,7 @@ pub fn parse(self: *Request, allocator: mem.Allocator, message_text: []const u8)
             .call_id => self.call_id = value,
             .cseq => self.sequence = try headers.Sequence.parse(value),
             .user_agent => self.user_agent = value,
+            .record_route => self.record_route = try headers.RecordRoute.parse(value),
             .contact => {
                 const contact = try headers.ContactHeader.parse(value);
                 try self.contact.append(allocator, contact);
@@ -127,13 +130,13 @@ pub fn parse(self: *Request, allocator: mem.Allocator, message_text: []const u8)
 }
 
 pub fn encode(self: Request, writer: *std.io.Writer) !void {
-    try writer.print("{s} {s} SIP/2.0\r\n", .{ self.method.toString(), self.uri });
+    try writer.print("{s} {f} SIP/2.0\r\n", .{ self.method.toString(), self.uri });
     for (self.via.items) |via| {
         try writer.print("{s}: ", .{headers.Header.via.toString()});
         try via.encode(writer);
     }
 
-    try writer.print("{d}\r\n", .{self.max_forwards});
+    try writer.print("{s}: {d}\r\n", .{ headers.Header.max_forwards.toString(), self.max_forwards });
 
     try writer.print("{s}: ", .{headers.Header.from.toString()});
     try self.from.encode(writer);
@@ -191,6 +194,11 @@ pub fn encode(self: Request, writer: *std.io.Writer) !void {
                 try writer.writeAll("\r\n");
             }
         }
+    }
+
+    if (self.record_route) |record_route| {
+        try writer.print("{s}: ", .{headers.Header.record_route.toString()});
+        try record_route.encode(writer);
     }
 
     if (self.content_type) |content_type| {

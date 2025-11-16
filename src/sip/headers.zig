@@ -420,6 +420,25 @@ pub const FromHeader = struct {
     }
 };
 
+pub const RecordRoute = struct {
+    address: Address,
+    lr: bool,
+
+    pub fn parse(header_text: []const u8) !RecordRoute {
+        _ = header_text;
+        unreachable; //TODO implement this function
+    }
+
+    // <sip:server.example.com;lr>
+    pub fn encode(self: RecordRoute, writer: *std.io.Writer) !void {
+        try writer.print("<sip:{s}:{d}", .{ self.address.host, self.address.port });
+        if (self.lr) {
+            try writer.writeAll(";lr");
+        }
+        try writer.writeAll(">\r\n");
+    }
+};
+
 pub const ToHeader = FromHeader;
 
 pub const Sequence = struct {
@@ -452,6 +471,7 @@ pub const Header = enum {
     call_id,
     cseq,
     user_agent,
+    record_route,
     contact,
     expires,
     allow,
@@ -477,6 +497,7 @@ pub const Header = enum {
         if (std.mem.eql(u8, field_lower, "call-id")) return Header.call_id;
         if (std.mem.eql(u8, field_lower, "cseq")) return Header.cseq;
         if (std.mem.eql(u8, field_lower, "user-agent")) return Header.user_agent;
+        if (std.mem.eql(u8, field_lower, "record-route")) return Header.record_route;
         if (std.mem.eql(u8, field_lower, "contact")) return Header.contact;
         if (std.mem.eql(u8, field_lower, "expires")) return Header.expires;
         if (std.mem.eql(u8, field_lower, "allow")) return Header.allow;
@@ -497,6 +518,7 @@ pub const Header = enum {
             .call_id => return "Call-ID",
             .cseq => return "CSeq",
             .user_agent => return "User-Agent",
+            .record_route => return "Record-Route",
             .contact => return "Contact",
             .expires => return "Expires",
             .allow => return "Allow",
