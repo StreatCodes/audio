@@ -50,7 +50,7 @@ pub fn sendResponse(self: Session, response: Response) !void {
     var response_buffer = std.io.Writer.Allocating.init(self.allocator);
     try response.encode(&response_buffer.writer);
 
-    debug.print("Response: [{s}]\n", .{response_buffer.written()});
+    debug.print("Sent: [{s}]\n", .{response_buffer.written()});
     _ = try posix.sendto(self.connection.socket, response_buffer.written(), 0, &self.connection.address, self.connection.address_len);
 }
 
@@ -59,6 +59,6 @@ pub fn sendRequest(self: Session, request: Request) !void {
     var request_buffer = std.io.Writer.Allocating.init(self.allocator);
     try request.encode(&request_buffer.writer);
 
-    debug.print("Request: [{s}]\n", .{request_buffer.written()});
+    debug.print("Sent: [{s}]\n", .{request_buffer.written()});
     _ = try posix.sendto(self.connection.socket, request_buffer.written(), 0, &self.connection.address, self.connection.address_len);
 }

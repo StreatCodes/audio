@@ -62,38 +62,10 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
 
         //Clients often send empty messages (\r\n) for keep alives, ignore them
         if (message.len == 0) continue;
-        debug.print("Request: [{s}]\n", .{message});
+        debug.print("Recieved: [{s}]\n", .{message});
 
-        var request = Request.init();
-        defer request.deinit(allocator);
-        try request.parse(allocator, message);
-
-        service.handleMessage(connection, request) catch |err| {
-            switch (err) {
-                Session.SessionError.NotRegistered => {
-                    // TODO this error handling can fail and crash the server
-                    // This error is for cases where a session wasn't found. Create a temporary one to send a response.
-                    const id = try request.from.contact.identity(allocator);
-                    defer allocator.free(id);
-                    debug.print("Recieved message from unregistered client {s}\n", .{id});
-                    var temp_session = try Session.init(allocator, connection, request);
-                    defer temp_session.deinit();
-
-                    var response = try Response.initFromRequest(allocator, request);
-                    response.status = .forbidden;
-                    try temp_session.sendResponse(response);
-                },
-                Session.SessionError.RecipientNotFound => {
-                    const session = try service.sessionFromRequest(request) orelse unreachable;
-
-                    var response = try Response.initFromRequest(allocator, request);
-                    response.status = .not_found;
-                    try session.sendResponse(response);
-                },
-                else => {
-                    debug.print("Unknown error\n", .{});
-                },
-            }
+        service.handleMessage(connection, message) catch |err| {
+            std.debug.print("Error handling message {any}\n", .{err});
         };
     }
 }

@@ -67,11 +67,48 @@ pub fn serverAddress(self: Service) headers.Address {
     };
 }
 
-/// Accepts a SIP request for an established session and returns a response
-/// if one should be sent back to the client. It is the callers responsibility
-/// to clean up the response if one is returned. All SIP messages will get
-/// routed through this to the appropriate handler for that method
-pub fn handleMessage(self: *Service, connection: Connection, request: Request) !void {
+/// Accepts a SIP message for an established session. All SIP messages will get
+/// routed through this to the appropriate handler for that method.
+pub fn handleMessage(self: *Service, connection: Connection, message: []const u8) !void {
+    if (mem.startsWith(u8, message, "SIP/2.0")) {
+        std.debug.print("TODO handle responses received", .{});
+        //TODO handle responses
+    } else {
+        var request = Request.init();
+        defer request.deinit(self.allocator);
+        try request.parse(self.allocator, message);
+
+        self.handleRequest(connection, request) catch |err| {
+            switch (err) {
+                Session.SessionError.NotRegistered => {
+                    // TODO this error handling can fail and crash the server
+                    // This error is for cases where a session wasn't found. Create a temporary one to send a response.
+                    const id = try request.from.contact.identity(self.allocator);
+                    defer self.allocator.free(id);
+                    debug.print("Recieved message from unregistered client {s}\n", .{id});
+                    var temp_session = try Session.init(self.allocator, connection, request);
+                    defer temp_session.deinit();
+
+                    var response = try Response.initFromRequest(self.allocator, request);
+                    response.status = .forbidden;
+                    try temp_session.sendResponse(response);
+                },
+                Session.SessionError.RecipientNotFound => {
+                    const session = try self.sessionFromRequest(request) orelse unreachable;
+
+                    var response = try Response.initFromRequest(self.allocator, request);
+                    response.status = .not_found;
+                    try session.sendResponse(response);
+                },
+                else => {
+                    debug.print("Unknown error\n", .{});
+                },
+            }
+        };
+    }
+}
+
+pub fn handleRequest(self: *Service, connection: Connection, request: Request) !void {
     switch (request.method) {
         .register => try self.handleRegister(connection, request),
         .invite => try self.handleInvite(request),
