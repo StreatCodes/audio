@@ -132,7 +132,7 @@ pub fn parse(self: *Response, allocator: mem.Allocator, message_text: []const u8
     self.body = lines.rest();
 }
 
-pub fn encode(self: Response, writer: anytype) !void {
+pub fn encode(self: Response, writer: *std.io.Writer) !void {
     try writer.print("SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(self.status), self.status.toString() });
     for (self.via.items) |via| {
         try writer.print("{s}: ", .{headers.Header.via.toString()});

@@ -80,7 +80,7 @@ pub const ContactHeader = struct {
     }
 
     //"Streats" <sip:streats@192.168.1.130:54216>;expires=3000
-    pub fn encode(self: ContactHeader, writer: anytype) !void {
+    pub fn encode(self: ContactHeader, writer: *std.io.Writer) !void {
         try self.contact.encode(writer);
         if (self.expires) |expires| try writer.print(";expires={d}", .{expires});
         try writer.writeAll("\r\n");
@@ -152,7 +152,7 @@ pub const Contact = struct {
     }
 
     //"Streats" <sip:streats@192.168.1.130:54216>
-    pub fn encode(self: Contact, writer: anytype) !void {
+    pub fn encode(self: Contact, writer: *std.io.Writer) !void {
         if (self.name) |name| try writer.print("\"{s}\" ", .{name});
         try writer.print("<{s}:{s}@{s}", .{ self.protocol.toString(), self.user, self.host });
         if (self.port) |port| {
@@ -349,7 +349,7 @@ pub const ViaHeader = struct {
         return via_header;
     }
 
-    pub fn encode(self: ViaHeader, writer: anytype) !void {
+    pub fn encode(self: ViaHeader, writer: *std.io.Writer) !void {
         try writer.print("SIP/2.0/{s} {s}:{d}", .{ self.protocol.toString(), self.address.host, self.address.port });
         try writer.print(";branch={s}", .{self.branch});
         if (self.rport) |rport| try writer.print(";rport={d}", .{rport});
@@ -413,7 +413,7 @@ pub const FromHeader = struct {
     }
 
     //<sip:user@example.com>;tag=server-tag
-    pub fn encode(self: FromHeader, writer: anytype) !void {
+    pub fn encode(self: FromHeader, writer: *std.io.Writer) !void {
         try self.contact.encode(writer);
         if (self.tag) |tag| try writer.print(";tag={s}", .{tag});
         try writer.writeAll("\r\n");
@@ -463,7 +463,7 @@ pub const Sequence = struct {
     }
 
     // 1 REGISTER
-    pub fn encode(self: Sequence, writer: anytype) !void {
+    pub fn encode(self: Sequence, writer: *std.io.Writer) !void {
         try writer.print("{d} {s}\r\n", .{ self.number, self.method.toString() });
     }
 };
