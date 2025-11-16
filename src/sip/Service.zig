@@ -71,8 +71,11 @@ pub fn serverAddress(self: Service) headers.Address {
 /// routed through this to the appropriate handler for that method.
 pub fn handleMessage(self: *Service, connection: Connection, message: []const u8) !void {
     if (mem.startsWith(u8, message, "SIP/2.0")) {
-        std.debug.print("TODO handle responses received", .{});
-        //TODO handle responses
+        var response = Response.init();
+        defer response.deinit(self.allocator);
+        try response.parse(self.allocator, message);
+
+        try self.handleResponse(response);
     } else {
         var request = Request.init();
         defer request.deinit(self.allocator);
@@ -108,16 +111,22 @@ pub fn handleMessage(self: *Service, connection: Connection, message: []const u8
     }
 }
 
-pub fn handleRequest(self: *Service, connection: Connection, request: Request) !void {
+fn handleResponse(self: *Service, response: Response) !void {
+    _ = self;
+
+    std.debug.print("Received repsonse {s}\n", .{response.status.toString()});
+}
+
+fn handleRequest(self: *Service, connection: Connection, request: Request) !void {
     switch (request.method) {
-        .register => try self.handleRegister(connection, request),
-        .invite => try self.handleInvite(request),
+        .register => try self.handleRegisterRequest(connection, request),
+        .invite => try self.handleInviteRequest(request),
         .ack => {}, //Do nothing
-        else => try self.handleUnknown(request),
+        else => try self.handleUnknownRequest(request),
     }
 }
 
-fn handleRegister(self: *Service, connection: Connection, request: Request) !void {
+fn handleRegisterRequest(self: *Service, connection: Connection, request: Request) !void {
     const session_id = try request.from.contact.identity(self.allocator);
 
     //Check to see if a session exists for the remote address, if not create one
@@ -145,7 +154,7 @@ fn handleRegister(self: *Service, connection: Connection, request: Request) !voi
     try session.sendResponse(response);
 }
 
-fn handleInvite(self: *Service, request: Request) !void {
+fn handleInviteRequest(self: *Service, request: Request) !void {
     const session = try self.sessionFromRequest(request) orelse return Session.SessionError.NotRegistered;
 
     // Let the send know we're trying to call the recipient
@@ -187,7 +196,7 @@ fn handleInvite(self: *Service, request: Request) !void {
     try recipient_session.sendRequest(new_request);
 }
 
-fn handleUnknown(self: Service, request: Request) !void {
+fn handleUnknownRequest(self: Service, request: Request) !void {
     const session = try self.sessionFromRequest(request) orelse return Session.SessionError.NotRegistered;
 
     //Process the message for the session

@@ -425,8 +425,13 @@ pub const RecordRoute = struct {
     lr: bool,
 
     pub fn parse(header_text: []const u8) !RecordRoute {
-        _ = header_text;
-        unreachable; //TODO implement this function
+        const uri = getHeaderValue(header_text);
+        const lr = try getHeaderParameter(header_text, "lr") != null;
+
+        return RecordRoute{
+            .address = try Address.parse(uri),
+            .lr = lr,
+        };
     }
 
     // <sip:server.example.com;lr>

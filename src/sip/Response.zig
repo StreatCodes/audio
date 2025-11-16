@@ -8,6 +8,7 @@ const Request = @import("./Request.zig");
 
 const ResponseError = error{
     FieldRequired,
+    InvalidMessage,
 };
 
 const Response = @This();
@@ -17,11 +18,16 @@ via: ArrayList(headers.ViaHeader),
 to: ?headers.ToHeader = null,
 from: ?headers.FromHeader = null,
 call_id: []const u8,
+max_forwards: u32 = 70,
+user_agent: ?[]const u8 = null,
+record_route: ?headers.RecordRoute = null,
 sequence: ?headers.Sequence = null,
 contact: ArrayList(headers.ContactHeader),
 server: ?[]const u8 = null,
 allow: ArrayList(headers.Method),
+content_type: ?[]const u8 = null,
 content_length: u32 = 0,
+supported: ArrayList(headers.Extension),
 
 body: []const u8 = "",
 
@@ -31,6 +37,7 @@ pub fn init() Response {
         .call_id = "",
         .contact = ArrayList(headers.ContactHeader).empty,
         .allow = ArrayList(headers.Method).empty,
+        .supported = ArrayList(headers.Extension).empty,
     };
 }
 
@@ -56,6 +63,73 @@ pub fn deinit(self: *Response, allocator: mem.Allocator) void {
     self.via.deinit(allocator);
     self.contact.deinit(allocator);
     self.allow.deinit(allocator);
+    self.supported.deinit(allocator);
+}
+
+// TODO probably shouldn't maintain two of these. handle the first line and then
+// reuse the rest of the parser between this and Request
+pub fn parse(self: *Response, allocator: mem.Allocator, message_text: []const u8) !void {
+    var lines = std.mem.splitSequence(u8, message_text, "\r\n");
+    const first_line = lines.next() orelse return ResponseError.InvalidMessage;
+
+    //Parse the request line
+    var first_line_values = std.mem.splitScalar(u8, first_line, ' ');
+
+    const version = first_line_values.next() orelse return ResponseError.InvalidMessage;
+    const status_text = first_line_values.next() orelse return ResponseError.InvalidMessage;
+
+    if (!std.mem.eql(u8, version, "SIP/2.0")) return ResponseError.InvalidMessage;
+    const status = try fmt.parseInt(u32, status_text, 10);
+    self.status = try StatusCode.fromCode(status);
+
+    //Parse the headers
+    while (lines.next()) |line| {
+        if (std.mem.eql(u8, line, "")) break;
+
+        const splitIndex = std.mem.indexOfScalar(u8, line, ':') orelse return headers.HeaderError.InvalidHeader;
+        const field = std.mem.trim(u8, line[0..splitIndex], " ");
+        const value = std.mem.trim(u8, line[splitIndex + 1 ..], " ");
+
+        const header_field = try headers.Header.fromString(field);
+
+        //TODO contact can have multiple values in one header that's comma seperated
+        switch (header_field) {
+            .via => {
+                const via = try headers.ViaHeader.parse(value);
+                try self.via.append(allocator, via);
+            },
+            .max_forwards => self.max_forwards = try std.fmt.parseInt(u32, value, 10),
+            .from => self.from = try headers.FromHeader.parse(value),
+            .to => self.to = try headers.ToHeader.parse(value),
+            .call_id => self.call_id = value,
+            .cseq => self.sequence = try headers.Sequence.parse(value),
+            .user_agent => self.user_agent = value,
+            .record_route => self.record_route = try headers.RecordRoute.parse(value),
+            .contact => {
+                const contact = try headers.ContactHeader.parse(value);
+                try self.contact.append(allocator, contact);
+            },
+            .expires => {},
+            .allow => {
+                var iter = std.mem.tokenizeScalar(u8, value, ',');
+                while (iter.next()) |method_text| {
+                    const trimmed = mem.trim(u8, method_text, " ");
+                    try self.allow.append(allocator, try headers.Method.fromString(trimmed));
+                }
+            },
+            .content_length => self.content_length = try std.fmt.parseInt(u32, value, 10),
+            .content_type => self.content_type = value,
+            .supported => {
+                var iter = std.mem.tokenizeScalar(u8, value, ',');
+                while (iter.next()) |extension_text| {
+                    const trimmed = mem.trim(u8, extension_text, " ");
+                    try self.supported.append(allocator, try headers.Extension.fromString(trimmed));
+                }
+            },
+        }
+    }
+
+    self.body = lines.rest();
 }
 
 pub fn encode(self: Response, writer: anytype) !void {
@@ -109,7 +183,7 @@ pub const StatusCode = enum(u32) {
     internal_error = 500,
     not_implemented = 501,
 
-    fn toString(self: StatusCode) []const u8 {
+    pub fn toString(self: StatusCode) []const u8 {
         switch (self) {
             .trying => return "Trying",
             .ok => return "OK",
@@ -120,6 +194,10 @@ pub const StatusCode = enum(u32) {
             .internal_error => return "Server Internal Error",
             .not_implemented => return "Not Implemented",
         }
+    }
+
+    pub fn fromCode(code: u32) !StatusCode {
+        return std.meta.intToEnum(StatusCode, code);
     }
 };
 
