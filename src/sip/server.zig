@@ -64,8 +64,9 @@ pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_
         if (message.len == 0) continue;
         debug.print("Recieved: [{s}]\n", .{message});
 
-        service.handleMessage(connection, message) catch |err| {
-            std.debug.print("Error handling message {any}\n", .{err});
-        };
+        try service.handleMessage(connection, message);
+        // service.handleMessage(connection, message) catch |err| {
+        //     std.debug.print("Error handling message {any}\n", .{err});
+        // };
     }
 }

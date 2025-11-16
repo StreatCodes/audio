@@ -424,7 +424,14 @@ pub const RecordRoute = struct {
     address: Address,
     lr: bool,
 
-    pub fn parse(header_text: []const u8) !RecordRoute {
+    pub fn parse(raw_header_text: []const u8) !RecordRoute {
+        var header_text = raw_header_text;
+        if (mem.startsWith(u8, raw_header_text, "<")) {
+            header_text = raw_header_text[1 .. raw_header_text.len - 1];
+        }
+        if (mem.startsWith(u8, header_text, "sip:")) {
+            header_text = header_text[4..];
+        }
         const uri = getHeaderValue(header_text);
         const lr = try getHeaderParameter(header_text, "lr") != null;
 

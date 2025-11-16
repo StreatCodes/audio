@@ -42,8 +42,17 @@ pub fn deinit(self: *Service) void {
     self.allocator.free(self.branch);
 }
 
-pub fn sessionFromRequest(self: Service, request: Request) !?*Session {
-    const session_id = try request.from.contact.identity(self.allocator);
+const Message = union(enum) {
+    request: Request,
+    response: Response,
+};
+
+pub fn sessionFromMessage(self: Service, message: Message) !?*Session {
+    var session_id: []const u8 = undefined;
+    switch (message) {
+        .request => |request| session_id = try request.from.contact.identity(self.allocator),
+        .response => |response| session_id = try response.from.contact.identity(self.allocator),
+    }
     defer self.allocator.free(session_id);
     return self.sessions.getPtr(session_id);
 }
@@ -97,7 +106,7 @@ pub fn handleMessage(self: *Service, connection: Connection, message: []const u8
                     try temp_session.sendResponse(response);
                 },
                 Session.SessionError.RecipientNotFound => {
-                    const session = try self.sessionFromRequest(request) orelse unreachable;
+                    const session = try self.sessionFromMessage(.{ .request = request }) orelse unreachable;
 
                     var response = try Response.initFromRequest(self.allocator, request);
                     response.status = .not_found;
@@ -112,9 +121,13 @@ pub fn handleMessage(self: *Service, connection: Connection, message: []const u8
 }
 
 fn handleResponse(self: *Service, response: Response) !void {
-    _ = self;
-
-    std.debug.print("Received repsonse {s}\n", .{response.status.toString()});
+    switch (response.status) {
+        .trying => {}, // Do nothing, we generate our own
+        .ringing => try self.forwardResponse(response),
+        else => {
+            std.debug.print("Response not implemented {any}\n", .{response.status});
+        },
+    }
 }
 
 fn handleRequest(self: *Service, connection: Connection, request: Request) !void {
@@ -130,7 +143,7 @@ fn handleRegisterRequest(self: *Service, connection: Connection, request: Reques
     const session_id = try request.from.contact.identity(self.allocator);
 
     //Check to see if a session exists for the remote address, if not create one
-    var session = try self.sessionFromRequest(request) orelse blk: {
+    var session = try self.sessionFromMessage(.{ .request = request }) orelse blk: {
         debug.print("REGISTER - {s} session created\n", .{session_id});
         var new_session = try Session.init(self.allocator, connection, request);
         try self.sessions.put(session_id, new_session);
@@ -155,7 +168,7 @@ fn handleRegisterRequest(self: *Service, connection: Connection, request: Reques
 }
 
 fn handleInviteRequest(self: *Service, request: Request) !void {
-    const session = try self.sessionFromRequest(request) orelse return Session.SessionError.NotRegistered;
+    const session = try self.sessionFromMessage(.{ .request = request }) orelse return Session.SessionError.NotRegistered;
 
     // Let the send know we're trying to call the recipient
     var trying_response = try Response.initFromRequest(self.allocator, request);
@@ -197,7 +210,7 @@ fn handleInviteRequest(self: *Service, request: Request) !void {
 }
 
 fn handleUnknownRequest(self: Service, request: Request) !void {
-    const session = try self.sessionFromRequest(request) orelse return Session.SessionError.NotRegistered;
+    const session = try self.sessionFromMessage(.{ .request = request }) orelse return Session.SessionError.NotRegistered;
 
     //Process the message for the session
     // const session = sessions.getPtr(remote_address) orelse unreachable;
@@ -206,6 +219,21 @@ fn handleUnknownRequest(self: Service, request: Request) !void {
     response.status = .not_implemented;
 
     try session.sendResponse(response);
+}
+
+fn forwardResponse(self: *Service, response: Response) !void {
+    const session = try self.sessionFromMessage(.{ .response = response }) orelse return Session.SessionError.NotRegistered;
+    _ = session;
+
+    const to_contact = response.to orelse return Request.RequestError.InvalidMessage; //TODO move this error to a MessageError type along with the union above
+    const to_identity = try to_contact.contact.identity(self.allocator);
+    defer self.allocator.free(to_identity);
+
+    var recipient_session = self.findSessionFromId(to_identity) orelse {
+        return Session.SessionError.RecipientNotFound;
+    };
+
+    try recipient_session.sendResponse(response); //TODO i probably need to update some fields here...
 }
 
 test "Server creates new session from REGISTER request" {

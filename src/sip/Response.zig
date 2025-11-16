@@ -16,7 +16,7 @@ status: StatusCode = .ok,
 
 via: ArrayList(headers.ViaHeader),
 to: ?headers.ToHeader = null,
-from: ?headers.FromHeader = null,
+from: headers.FromHeader = undefined,
 call_id: []const u8,
 max_forwards: u32 = 70,
 user_agent: ?[]const u8 = null,
@@ -146,12 +146,8 @@ pub fn encode(self: Response, writer: *std.io.Writer) !void {
         return ResponseError.FieldRequired;
     }
 
-    if (self.from) |from| {
-        try writer.print("{s}: ", .{headers.Header.from.toString()});
-        try from.encode(writer);
-    } else {
-        return ResponseError.FieldRequired;
-    }
+    try writer.print("{s}: ", .{headers.Header.from.toString()});
+    try self.from.encode(writer);
 
     try writer.print("{s}: ", .{headers.Header.call_id.toString()});
     try writer.print("{s}\r\n", .{self.call_id});
@@ -175,6 +171,7 @@ pub fn encode(self: Response, writer: *std.io.Writer) !void {
 
 pub const StatusCode = enum(u32) {
     trying = 100,
+    ringing = 180,
     ok = 200,
     bad_request = 400,
     unauthorized = 401,
@@ -182,17 +179,20 @@ pub const StatusCode = enum(u32) {
     not_found = 404,
     internal_error = 500,
     not_implemented = 501,
+    decline = 603,
 
     pub fn toString(self: StatusCode) []const u8 {
         switch (self) {
             .trying => return "Trying",
             .ok => return "OK",
+            .ringing => return "Ringing",
             .bad_request => return "Bad Request",
             .unauthorized => return "Unauthorized",
             .forbidden => return "Forbidden",
             .not_found => return "Not Found",
             .internal_error => return "Server Internal Error",
             .not_implemented => return "Not Implemented",
+            .decline => return "Decline",
         }
     }
 
