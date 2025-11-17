@@ -124,6 +124,7 @@ fn handleResponse(self: *Service, response: Response) !void {
     switch (response.status) {
         .trying => {}, // Do nothing, we generate our own
         .ringing => try self.forwardResponse(response),
+        .ok => try self.forwardResponse(response),
         else => {
             std.debug.print("Response not implemented {any}\n", .{response.status});
         },
