@@ -17,6 +17,7 @@ pub const SessionError = error{
 };
 
 allocator: mem.Allocator,
+io: std.Io,
 /// Epoch time in milliseconds when the session is due to expire
 expires: i64 = 0,
 identity: []const u8,
@@ -24,7 +25,7 @@ call_id: []u8 = "",
 contact: headers.Contact,
 connection: Connection,
 
-pub fn init(allocator: mem.Allocator, connection: Connection, request: Request) !Session {
+pub fn init(allocator: mem.Allocator, io: std.Io, connection: Connection, request: Request) !Session {
     const to = request.to orelse return Request.RequestError.InvalidMessage;
 
     if (request.contact.items.len == 0) {
@@ -33,6 +34,7 @@ pub fn init(allocator: mem.Allocator, connection: Connection, request: Request) 
 
     return Session{
         .allocator = allocator,
+        .io = io,
         .identity = try to.contact.identity(allocator),
         .contact = request.contact.items[0].contact,
         .connection = connection,
@@ -47,18 +49,21 @@ pub fn deinit(self: *Session) void {
 
 /// Sends a response to the session's client
 pub fn sendResponse(self: Session, response: Response) !void {
-    var response_buffer = std.io.Writer.Allocating.init(self.allocator);
-    try response.encode(&response_buffer.writer);
+    var buffer: std.ArrayList(u8) = try .initCapacity(self.allocator, 4096);
+    defer buffer.deinit(self.allocator);
+    try response.encode(self.allocator, &buffer);
 
-    debug.print("Sent: [{s}]\n", .{response_buffer.written()});
-    _ = try posix.sendto(self.connection.socket, response_buffer.written(), 0, &self.connection.address, self.connection.address_len);
+    try self.connection.socket.send(self.io, &self.connection.address, buffer.items);
+
+    debug.print("Sent: [{s}]\n", .{buffer.items});
 }
 
 /// Sends a request to the session's client
 pub fn sendRequest(self: Session, request: Request) !void {
-    var request_buffer = std.io.Writer.Allocating.init(self.allocator);
-    try request.encode(&request_buffer.writer);
+    var buffer: std.ArrayList(u8) = try .initCapacity(self.allocator, 4096);
+    defer buffer.deinit(self.allocator);
+    try request.encode(self.allocator, &buffer);
 
-    debug.print("Sent: [{s}]\n", .{request_buffer.written()});
-    _ = try posix.sendto(self.connection.socket, request_buffer.written(), 0, &self.connection.address, self.connection.address_len);
+    debug.print("Sent: [{s}]\n", .{buffer.items});
+    try self.connection.socket.send(self.io, &self.connection.address, buffer.items);
 }

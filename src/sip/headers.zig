@@ -80,10 +80,10 @@ pub const ContactHeader = struct {
     }
 
     //"Streats" <sip:streats@192.168.1.130:54216>;expires=3000
-    pub fn encode(self: ContactHeader, writer: *std.io.Writer) !void {
-        try self.contact.encode(writer);
-        if (self.expires) |expires| try writer.print(";expires={d}", .{expires});
-        try writer.writeAll("\r\n");
+    pub fn encode(self: ContactHeader, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+        try self.contact.encode(allocator, buffer);
+        if (self.expires) |expires| try buffer.print(allocator, ";expires={d}", .{expires});
+        try buffer.appendSlice(allocator, "\r\n");
     }
 };
 
@@ -152,19 +152,19 @@ pub const Contact = struct {
     }
 
     //"Streats" <sip:streats@192.168.1.130:54216>
-    pub fn encode(self: Contact, writer: *std.io.Writer) !void {
-        if (self.name) |name| try writer.print("\"{s}\" ", .{name});
-        try writer.print("<{s}:{s}@{s}", .{ self.protocol.toString(), self.user, self.host });
+    pub fn encode(self: Contact, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+        if (self.name) |name| try buffer.print(allocator, "\"{s}\" ", .{name});
+        try buffer.print(allocator, "<{s}:{s}@{s}", .{ self.protocol.toString(), self.user, self.host });
         if (self.port) |port| {
             //TODO convert to switch when we have other protocols
             if (self.protocol == .sip and self.port != 5060) {
-                try writer.print(":{d}", .{port});
+                try buffer.print(allocator, ":{d}", .{port});
             }
         }
         if (self.ob) {
-            try writer.writeAll(";ob");
+            try buffer.appendSlice(allocator, ";ob");
         }
-        _ = try writer.writeByte('>');
+        _ = try buffer.append(allocator, '>');
     }
 
     //streats@192.168.1.130
@@ -326,7 +326,7 @@ pub const ViaHeader = struct {
         if (!mem.eql(u8, protocol, "UDP")) return HeaderError.InvalidHeader;
         via_header.protocol = try TransportProtocol.fromString(protocol);
 
-        const address_text = std.mem.trimLeft(u8, reader.rest(), " ");
+        const address_text = std.mem.trimStart(u8, reader.rest(), " ");
         via_header.address = try Address.parse(address_text);
 
         //get attributes
@@ -349,15 +349,15 @@ pub const ViaHeader = struct {
         return via_header;
     }
 
-    pub fn encode(self: ViaHeader, writer: *std.io.Writer) !void {
-        try writer.print("SIP/2.0/{s} {s}:{d}", .{ self.protocol.toString(), self.address.host, self.address.port });
-        try writer.print(";branch={s}", .{self.branch});
-        if (self.rport) |rport| try writer.print(";rport={d}", .{rport});
-        if (self.ttl) |ttl| try writer.print(";ttl={d}", .{ttl});
-        if (self.received) |received| try writer.print(";received={s}", .{received});
-        if (self.maddr) |maddr| try writer.print(";maddr={s}", .{maddr});
-        if (self.sent_by) |sent_by| try writer.print(";sent-by={s}", .{sent_by});
-        try writer.writeAll("\r\n");
+    pub fn encode(self: ViaHeader, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+        try buffer.print(allocator, "SIP/2.0/{s} {s}:{d}", .{ self.protocol.toString(), self.address.host, self.address.port });
+        try buffer.print(allocator, ";branch={s}", .{self.branch});
+        if (self.rport) |rport| try buffer.print(allocator, ";rport={d}", .{rport});
+        if (self.ttl) |ttl| try buffer.print(allocator, ";ttl={d}", .{ttl});
+        if (self.received) |received| try buffer.print(allocator, ";received={s}", .{received});
+        if (self.maddr) |maddr| try buffer.print(allocator, ";maddr={s}", .{maddr});
+        if (self.sent_by) |sent_by| try buffer.print(allocator, ";sent-by={s}", .{sent_by});
+        try buffer.appendSlice(allocator, "\r\n");
     }
 };
 
@@ -391,12 +391,11 @@ test "ViaHeader encodes fields to text" {
         .ttl = 999,
     };
 
-    var response_builder = std.ArrayList(u8).init(testing.allocator);
-    defer response_builder.deinit();
-    const writer = response_builder.writer();
+    var response = std.ArrayList(u8).init(testing.allocator);
+    defer response.deinit();
 
-    try via.encode(writer);
-    try testing.expect(mem.eql(u8, response_builder.items, "SIP/2.0/UDP 192.168.1.130:54216;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh;ttl=999\r\n"));
+    try via.encode(std.testing.allocator, response);
+    try testing.expect(mem.eql(u8, response.items, "SIP/2.0/UDP 192.168.1.130:54216;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh;ttl=999\r\n"));
 }
 
 pub const FromHeader = struct {
@@ -413,10 +412,10 @@ pub const FromHeader = struct {
     }
 
     //<sip:user@example.com>;tag=server-tag
-    pub fn encode(self: FromHeader, writer: *std.io.Writer) !void {
-        try self.contact.encode(writer);
-        if (self.tag) |tag| try writer.print(";tag={s}", .{tag});
-        try writer.writeAll("\r\n");
+    pub fn encode(self: FromHeader, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+        try self.contact.encode(allocator, buffer);
+        if (self.tag) |tag| try buffer.print(allocator, ";tag={s}", .{tag});
+        try buffer.appendSlice(allocator, "\r\n");
     }
 };
 
@@ -442,12 +441,12 @@ pub const RecordRoute = struct {
     }
 
     // <sip:server.example.com;lr>
-    pub fn encode(self: RecordRoute, writer: *std.io.Writer) !void {
-        try writer.print("<sip:{s}:{d}", .{ self.address.host, self.address.port });
+    pub fn encode(self: RecordRoute, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+        try buffer.print(allocator, "<sip:{s}:{d}", .{ self.address.host, self.address.port });
         if (self.lr) {
-            try writer.writeAll(";lr");
+            try buffer.appendSlice(allocator, ";lr");
         }
-        try writer.writeAll(">\r\n");
+        try buffer.appendSlice(allocator, ">\r\n");
     }
 };
 
@@ -470,8 +469,8 @@ pub const Sequence = struct {
     }
 
     // 1 REGISTER
-    pub fn encode(self: Sequence, writer: *std.io.Writer) !void {
-        try writer.print("{d} {s}\r\n", .{ self.number, self.method.toString() });
+    pub fn encode(self: Sequence, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+        try buffer.print(allocator, "{d} {s}\r\n", .{ self.number, self.method.toString() });
     }
 };
 

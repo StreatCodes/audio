@@ -18,10 +18,11 @@ const ServiceError = error{
 };
 
 allocator: std.mem.Allocator,
+io: std.Io,
 sessions: Sessions,
 branch: []const u8,
 
-pub fn init(allocator: mem.Allocator) !Service {
+pub fn init(allocator: mem.Allocator, io: std.Io) !Service {
     const prefix = "z9hG4bK";
     var random_data: [20]u8 = undefined;
 
@@ -30,6 +31,7 @@ pub fn init(allocator: mem.Allocator) !Service {
 
     return Service{
         .allocator = allocator,
+        .io = io,
         .sessions = Sessions.init(allocator),
         .branch = try fmt.allocPrint(allocator, "{s}{x}", .{ prefix, random_data }),
     };
@@ -98,7 +100,7 @@ pub fn handleMessage(self: *Service, connection: Connection, message: []const u8
                     const id = try request.from.contact.identity(self.allocator);
                     defer self.allocator.free(id);
                     debug.print("Recieved message from unregistered client {s}\n", .{id});
-                    var temp_session = try Session.init(self.allocator, connection, request);
+                    var temp_session = try Session.init(self.allocator, self.io, connection, request);
                     defer temp_session.deinit();
 
                     var response = try Response.initFromRequest(self.allocator, request);
@@ -146,13 +148,14 @@ fn handleRegisterRequest(self: *Service, connection: Connection, request: Reques
     //Check to see if a session exists for the remote address, if not create one
     var session = try self.sessionFromMessage(.{ .request = request }) orelse blk: {
         debug.print("REGISTER - {s} session created\n", .{session_id});
-        var new_session = try Session.init(self.allocator, connection, request);
+        var new_session = try Session.init(self.allocator, self.io, connection, request);
         try self.sessions.put(session_id, new_session);
         break :blk &new_session;
     };
 
     const session_duration: i64 = @intCast(request.expires * 1000);
-    session.expires = std.time.milliTimestamp() + session_duration;
+    const ts = std.Io.Timestamp.now(self.io, .real);
+    session.expires = ts.addDuration(std.Io.Duration.fromMilliseconds(session_duration)).toMilliseconds();
 
     var response = try Response.initFromRequest(self.allocator, request);
     defer response.deinit(self.allocator);

@@ -2,7 +2,7 @@
     .name = .zig_rtp,
     .version = "0.0.0",
     .fingerprint = 0xed0cbd0fa7effec, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{},
 
     .paths = .{

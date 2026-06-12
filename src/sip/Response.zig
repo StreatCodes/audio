@@ -80,7 +80,7 @@ pub fn parse(self: *Response, allocator: mem.Allocator, message_text: []const u8
 
     if (!std.mem.eql(u8, version, "SIP/2.0")) return ResponseError.InvalidMessage;
     const status = try fmt.parseInt(u32, status_text, 10);
-    self.status = try StatusCode.fromCode(status);
+    self.status = StatusCode.fromCode(status);
 
     //Parse the headers
     while (lines.next()) |line| {
@@ -132,40 +132,40 @@ pub fn parse(self: *Response, allocator: mem.Allocator, message_text: []const u8
     self.body = lines.rest();
 }
 
-pub fn encode(self: Response, writer: *std.io.Writer) !void {
-    try writer.print("SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(self.status), self.status.toString() });
+pub fn encode(self: Response, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+    try buffer.print(allocator, "SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(self.status), self.status.toString() });
     for (self.via.items) |via| {
-        try writer.print("{s}: ", .{headers.Header.via.toString()});
-        try via.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.via.toString()});
+        try via.encode(allocator, buffer);
     }
 
     if (self.to) |to| {
-        try writer.print("{s}: ", .{headers.Header.to.toString()});
-        try to.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.to.toString()});
+        try to.encode(allocator, buffer);
     } else {
         return ResponseError.FieldRequired;
     }
 
-    try writer.print("{s}: ", .{headers.Header.from.toString()});
-    try self.from.encode(writer);
+    try buffer.print(allocator, "{s}: ", .{headers.Header.from.toString()});
+    try self.from.encode(allocator, buffer);
 
-    try writer.print("{s}: ", .{headers.Header.call_id.toString()});
-    try writer.print("{s}\r\n", .{self.call_id});
+    try buffer.print(allocator, "{s}: ", .{headers.Header.call_id.toString()});
+    try buffer.print(allocator, "{s}\r\n", .{self.call_id});
 
     if (self.sequence) |sequence| {
-        try writer.print("{s}: ", .{headers.Header.cseq.toString()});
-        try sequence.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.cseq.toString()});
+        try sequence.encode(allocator, buffer);
     } else {
         return ResponseError.FieldRequired;
     }
 
     for (self.contact.items) |contact| {
-        try writer.print("{s}: ", .{headers.Header.contact.toString()});
-        try contact.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.contact.toString()});
+        try contact.encode(allocator, buffer);
     }
 
-    try writer.writeAll("\r\n");
-    try writer.writeAll(self.body);
+    try buffer.appendSlice(allocator, "\r\n");
+    try buffer.appendSlice(allocator, self.body);
     //TODO do i need to write /r/n next?
 }
 
@@ -180,6 +180,7 @@ pub const StatusCode = enum(u32) {
     internal_error = 500,
     not_implemented = 501,
     decline = 603,
+    _,
 
     pub fn toString(self: StatusCode) []const u8 {
         switch (self) {
@@ -193,11 +194,12 @@ pub const StatusCode = enum(u32) {
             .internal_error => return "Server Internal Error",
             .not_implemented => return "Not Implemented",
             .decline => return "Decline",
+            else => return "Unknown",
         }
     }
 
-    pub fn fromCode(code: u32) !StatusCode {
-        return std.meta.intToEnum(StatusCode, code);
+    pub fn fromCode(code: u32) StatusCode {
+        return @enumFromInt(code);
     }
 };
 

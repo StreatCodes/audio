@@ -11,9 +11,8 @@ const Service = @import("./Service.zig");
 const Session = @import("./Session.zig");
 
 pub const Connection = struct {
-    socket: posix.socket_t,
-    address: posix.sockaddr,
-    address_len: posix.socklen_t,
+    socket: std.Io.net.Socket,
+    address: std.Io.net.IpAddress,
 
     pub fn getAddressAndPort(self: Connection, allocator: mem.Allocator, user: []const u8) ![]const u8 {
         const address = net.Address.initPosix(@alignCast(&self.address));
@@ -32,39 +31,38 @@ pub const Connection = struct {
 
 const UDP_MAX_PAYLOAD = 65507;
 
-pub fn startServer(allocator: mem.Allocator, listen_address: []const u8, listen_port: u16) !void {
-    var buf = try allocator.alloc(u8, UDP_MAX_PAYLOAD);
-    defer allocator.free(buf);
+pub fn startServer(gpa: mem.Allocator, io: std.Io, listen_address: []const u8, listen_port: u16) !void {
+    const buf = try gpa.alloc(u8, UDP_MAX_PAYLOAD);
+    defer gpa.free(buf);
 
-    const socket = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM | posix.SOCK.CLOEXEC, 0);
-    defer posix.close(socket);
+    const address = try std.Io.net.IpAddress.parse(listen_address, listen_port);
+    const socket = try std.Io.net.IpAddress.bind(&address, io, .{ .mode = .dgram });
+    defer socket.close(io);
 
-    const address = try net.Address.resolveIp(listen_address, listen_port);
-    try posix.bind(socket, &address.any, address.getOsSockLen());
     debug.print("Listening {s}:{d}\n", .{ listen_address, listen_port });
 
-    var service = try Service.init(allocator);
+    var service = try Service.init(gpa, io);
     defer service.deinit();
 
     //Wait for incoming datagrams and process them
     while (true) {
-        var client_addr: posix.sockaddr = undefined;
-        var client_addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
-        const recv_bytes = try posix.recvfrom(socket, buf, 0, &client_addr, &client_addr_len);
+        const buffer = try gpa.alloc(u8, 2048);
+        defer gpa.free(buffer);
+        const message = try socket.receive(io, buffer);
+
         const connection = Connection{
             .socket = socket,
-            .address = client_addr,
-            .address_len = client_addr_len,
+            .address = message.from,
         };
 
         //Per the spec we need to trim any leading line breaks
-        const message = std.mem.trimLeft(u8, buf[0..recv_bytes], "\r\n");
+        const trimmed_message = std.mem.trimStart(u8, message.data, "\r\n");
 
         //Clients often send empty messages (\r\n) for keep alives, ignore them
-        if (message.len == 0) continue;
-        debug.print("Recieved: [{s}]\n", .{message});
+        if (trimmed_message.len == 0) continue;
+        debug.print("Recieved: [{s}]\n", .{trimmed_message});
 
-        try service.handleMessage(connection, message);
+        try service.handleMessage(connection, trimmed_message);
         // service.handleMessage(connection, message) catch |err| {
         //     std.debug.print("Error handling message {any}\n", .{err});
         // };

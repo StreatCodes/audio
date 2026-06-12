@@ -129,86 +129,86 @@ pub fn parse(self: *Request, allocator: mem.Allocator, message_text: []const u8)
     self.body = lines.rest();
 }
 
-pub fn encode(self: Request, writer: *std.io.Writer) !void {
-    try writer.print("{s} {f} SIP/2.0\r\n", .{ self.method.toString(), self.uri });
+pub fn encode(self: Request, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+    try buffer.print(allocator, "{s} {f} SIP/2.0\r\n", .{ self.method.toString(), self.uri });
     for (self.via.items) |via| {
-        try writer.print("{s}: ", .{headers.Header.via.toString()});
-        try via.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.via.toString()});
+        try via.encode(allocator, buffer);
     }
 
-    try writer.print("{s}: {d}\r\n", .{ headers.Header.max_forwards.toString(), self.max_forwards });
+    try buffer.print(allocator, "{s}: {d}\r\n", .{ headers.Header.max_forwards.toString(), self.max_forwards });
 
-    try writer.print("{s}: ", .{headers.Header.from.toString()});
-    try self.from.encode(writer);
+    try buffer.print(allocator, "{s}: ", .{headers.Header.from.toString()});
+    try self.from.encode(allocator, buffer);
 
     if (self.to) |to| {
-        try writer.print("{s}: ", .{headers.Header.to.toString()});
-        try to.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.to.toString()});
+        try to.encode(allocator, buffer);
     } else {
         return RequestError.FieldRequired;
     }
 
-    try writer.print("{s}: ", .{headers.Header.call_id.toString()});
-    try writer.print("{s}\r\n", .{self.call_id});
+    try buffer.print(allocator, "{s}: ", .{headers.Header.call_id.toString()});
+    try buffer.print(allocator, "{s}\r\n", .{self.call_id});
 
     if (self.sequence) |sequence| {
-        try writer.print("{s}: ", .{headers.Header.cseq.toString()});
-        try sequence.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.cseq.toString()});
+        try sequence.encode(allocator, buffer);
     } else {
         return RequestError.FieldRequired;
     }
 
     if (self.user_agent) |user_agent| {
-        try writer.print("{s}: ", .{headers.Header.user_agent.toString()});
-        try writer.print("{s}\r\n", .{user_agent});
+        try buffer.print(allocator, "{s}: ", .{headers.Header.user_agent.toString()});
+        try buffer.print(allocator, "{s}\r\n", .{user_agent});
     } else {
         return RequestError.FieldRequired;
     }
 
     for (self.contact.items) |contact| {
-        try writer.print("{s}: ", .{headers.Header.contact.toString()});
-        try contact.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.contact.toString()});
+        try contact.encode(allocator, buffer);
     }
 
     // TODO expires - may require making the field optional
 
     if (self.allow.items.len > 0) {
-        try writer.print("{s}: ", .{headers.Header.allow.toString()});
+        try buffer.print(allocator, "{s}: ", .{headers.Header.allow.toString()});
         for (self.allow.items, 0..) |allow, index| {
-            try writer.writeAll(allow.toString());
+            try buffer.appendSlice(allocator, allow.toString());
             if (index < self.allow.items.len - 1) {
-                try writer.writeAll(", ");
+                try buffer.appendSlice(allocator, ", ");
             } else {
-                try writer.writeAll("\r\n");
+                try buffer.appendSlice(allocator, "\r\n");
             }
         }
     }
 
     if (self.supported.items.len > 0) {
-        try writer.print("{s}: ", .{headers.Header.supported.toString()});
+        try buffer.print(allocator, "{s}: ", .{headers.Header.supported.toString()});
         for (self.supported.items, 0..) |supported, index| {
-            try writer.writeAll(supported.toString());
+            try buffer.appendSlice(allocator, supported.toString());
             if (index < self.supported.items.len - 1) {
-                try writer.writeAll(", ");
+                try buffer.appendSlice(allocator, ", ");
             } else {
-                try writer.writeAll("\r\n");
+                try buffer.appendSlice(allocator, "\r\n");
             }
         }
     }
 
     if (self.record_route) |record_route| {
-        try writer.print("{s}: ", .{headers.Header.record_route.toString()});
-        try record_route.encode(writer);
+        try buffer.print(allocator, "{s}: ", .{headers.Header.record_route.toString()});
+        try record_route.encode(allocator, buffer);
     }
 
     if (self.content_type) |content_type| {
-        try writer.print("{s}: {s}\r\n", .{ headers.Header.content_type.toString(), content_type });
+        try buffer.print(allocator, "{s}: {s}\r\n", .{ headers.Header.content_type.toString(), content_type });
     }
 
-    try writer.print("{s}: {d}\r\n", .{ headers.Header.content_length.toString(), self.content_length });
+    try buffer.print(allocator, "{s}: {d}\r\n", .{ headers.Header.content_length.toString(), self.content_length });
 
-    try writer.writeAll("\r\n");
-    try writer.writeAll(self.body);
+    try buffer.appendSlice(allocator, "\r\n");
+    try buffer.appendSlice(allocator, self.body);
     //TODO do i need to write /r/n next?
 }
 
