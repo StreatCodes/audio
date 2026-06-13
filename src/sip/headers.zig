@@ -2,10 +2,9 @@ const std = @import("std");
 const debug = std.debug;
 const mem = std.mem;
 const fmt = std.fmt;
-const net = std.net;
-const io = std.io;
 const testing = std.testing;
-const SliceReader = @import("./SliceReader.zig");
+const SliceReader = @import("util/SliceReader.zig");
+const MessageError = @import("Message.zig").MessageError;
 
 pub const HeaderError = error{
     InvalidMethod,
@@ -391,11 +390,11 @@ test "ViaHeader encodes fields to text" {
         .ttl = 999,
     };
 
-    var response = std.ArrayList(u8).init(testing.allocator);
-    defer response.deinit();
+    var response: std.ArrayList(u8) = .empty;
+    defer response.deinit(std.testing.allocator);
 
-    try via.encode(std.testing.allocator, response);
-    try testing.expect(mem.eql(u8, response.items, "SIP/2.0/UDP 192.168.1.130:54216;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh;ttl=999\r\n"));
+    try via.encode(std.testing.allocator, &response);
+    try testing.expectEqualStrings(response.items, "SIP/2.0/UDP 192.168.1.130:54216;branch=z9hG4bKPjVCXUYxi5CwuolMrq3U0IT1X8sXsgWDoh;ttl=999\r\n");
 }
 
 pub const FromHeader = struct {
@@ -489,6 +488,7 @@ pub const Header = enum {
     content_length,
     content_type,
     supported,
+    accept,
 
     pub fn fromString(field: []const u8) !Header {
         const max_field_length = 128;
@@ -515,8 +515,8 @@ pub const Header = enum {
         if (std.mem.eql(u8, field_lower, "content-length")) return Header.content_length;
         if (std.mem.eql(u8, field_lower, "content-type")) return Header.content_type;
         if (std.mem.eql(u8, field_lower, "supported")) return Header.supported;
+        if (std.mem.eql(u8, field_lower, "accept")) return Header.accept;
 
-        debug.print("bad header {s}\n", .{field_lower});
         return HeaderError.InvalidHeader;
     }
 
@@ -536,6 +536,7 @@ pub const Header = enum {
             .content_length => return "Content-Length",
             .content_type => return "Content-Type",
             .supported => return "Supported",
+            .accept => return "Accept",
         }
     }
 };
@@ -598,11 +599,13 @@ pub const Extension = enum {
     replaces,
     one_hundred_rel,
     no_refer_sub,
+    timer,
 
     pub fn fromString(extension: []const u8) !Extension {
         if (std.mem.eql(u8, extension, "replaces")) return Extension.replaces;
         if (std.mem.eql(u8, extension, "100rel")) return Extension.one_hundred_rel;
         if (std.mem.eql(u8, extension, "norefersub")) return Extension.no_refer_sub;
+        if (std.mem.eql(u8, extension, "timer")) return Extension.timer;
         debug.print("unknown extension: {s}\n", .{extension});
         return HeaderError.UnknownExtension;
     }
@@ -612,6 +615,104 @@ pub const Extension = enum {
             .replaces => return "replaces",
             .one_hundred_rel => return "100rel",
             .no_refer_sub => return "norefersub",
+            .timer => return "timer",
         }
+    }
+};
+
+pub const StartLine = union(enum) {
+    request: RequestLine,
+    response: ResponseLine,
+
+    pub fn parse(line: []const u8) !StartLine {
+        if (std.mem.startsWith(u8, line, "SIP/2.0")) {
+            return .{ .response = try ResponseLine.parse(line) };
+        }
+        return .{ .request = try RequestLine.parse(line) };
+    }
+
+    pub fn encode(start_line: StartLine, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
+        switch (start_line) {
+            .request => |req| {
+                try buffer.print(allocator, "{s} {f} SIP/2.0\r\n", .{ req.method.toString(), req.uri });
+            },
+            .response => |res| {
+                try buffer.print(allocator, "SIP/2.0 {d} {s}\r\n", .{ @intFromEnum(res.status), res.status.toString() });
+            },
+        }
+    }
+};
+
+pub const RequestLine = struct {
+    method: Method,
+    uri: std.Uri,
+    version: []const u8,
+
+    pub fn parse(line: []const u8) !RequestLine {
+        var parts = std.mem.splitScalar(u8, line, ' ');
+
+        const method = parts.next() orelse return MessageError.BadRequest;
+        const uri = parts.next() orelse return MessageError.BadRequest;
+        const version = parts.next() orelse return MessageError.BadRequest;
+
+        return .{
+            .method = try Method.fromString(method),
+            .uri = try std.Uri.parse(uri),
+            .version = version,
+        };
+    }
+};
+
+pub const ResponseLine = struct {
+    version: []const u8,
+    status: StatusCode,
+
+    pub fn parse(line: []const u8) !ResponseLine {
+        var parts = std.mem.splitScalar(u8, line, ' ');
+
+        const version = parts.next() orelse return MessageError.BadResponse;
+        const status_text = parts.next() orelse return MessageError.BadResponse;
+
+        if (!std.mem.eql(u8, version, "SIP/2.0")) return MessageError.BadResponse;
+        const status = try fmt.parseInt(u32, status_text, 10);
+
+        return .{
+            .version = version,
+            .status = StatusCode.fromCode(status),
+        };
+    }
+};
+
+pub const StatusCode = enum(u32) {
+    trying = 100,
+    ringing = 180,
+    ok = 200,
+    bad_request = 400,
+    unauthorized = 401,
+    forbidden = 403,
+    not_found = 404,
+    internal_error = 500,
+    not_implemented = 501,
+    decline = 603,
+    _,
+
+    pub fn toString(self: StatusCode) []const u8 {
+        switch (self) {
+            .trying => return "Trying",
+            .ok => return "OK",
+            .ringing => return "Ringing",
+            .bad_request => return "Bad Request",
+            .unauthorized => return "Unauthorized",
+            .forbidden => return "Forbidden",
+            .not_found => return "Not Found",
+            .internal_error => return "Server Internal Error",
+            .not_implemented => return "Not Implemented",
+            .decline => return "Decline",
+            else => return "Unknown",
+        }
+    }
+
+    pub fn fromCode(code: u32) StatusCode {
+        return @enumFromInt(code);
     }
 };

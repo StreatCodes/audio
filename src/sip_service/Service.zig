@@ -1,28 +1,25 @@
 const std = @import("std");
-const mem = std.mem;
-const fmt = std.fmt;
-const debug = std.debug;
-const posix = std.posix;
-const testing = std.testing;
-const headers = @import("./headers.zig");
-const Request = @import("./Request.zig");
-const Response = @import("./Response.zig");
-const Session = @import("./Session.zig");
-const Connection = @import("./server.zig").Connection;
+const headers = @import("../sip/headers.zig");
+const Request = @import("../sip/Request.zig");
+const Response = @import("../sip/Response.zig");
+const Registrar = @import("../sip/Registrar.zig");
+const Registration = @import("../sip/Registrar.zig").Registration;
+const Connection = @import("../sip/server.zig").Connection;
 
 const Service = @This();
-const Sessions = std.StringHashMap(Session);
 
-const ServiceError = error{
+pub const ServiceError = error{
     MaxForwardsExceeded,
+    NotRegistered,
+    RecipientNotFound,
 };
 
 allocator: std.mem.Allocator,
 io: std.Io,
-sessions: Sessions,
+registrar: Registrar,
 branch: []const u8,
 
-pub fn init(allocator: mem.Allocator, io: std.Io) !Service {
+pub fn init(allocator: std.mem.Allocator, io: std.Io) !Service {
     const prefix = "z9hG4bK";
     var random_data: [20]u8 = undefined;
 
@@ -32,42 +29,14 @@ pub fn init(allocator: mem.Allocator, io: std.Io) !Service {
     return Service{
         .allocator = allocator,
         .io = io,
-        .sessions = Sessions.init(allocator),
-        .branch = try fmt.allocPrint(allocator, "{s}{x}", .{ prefix, random_data }),
+        .registrar = Registrar.init(allocator),
+        .branch = try std.fmt.allocPrint(allocator, "{s}{x}", .{ prefix, random_data }),
     };
 }
 
 pub fn deinit(self: *Service) void {
-    //TODO iterate all the session keys and deinit them
-    //TODO iterate all the sessions and deinit them
-    self.sessions.deinit();
+    self.registrar.deinit(self.allocator);
     self.allocator.free(self.branch);
-}
-
-const Message = union(enum) {
-    request: Request,
-    response: Response,
-};
-
-pub fn sessionFromMessage(self: Service, message: Message) !?*Session {
-    var session_id: []const u8 = undefined;
-    switch (message) {
-        .request => |request| session_id = try request.from.contact.identity(self.allocator),
-        .response => |response| session_id = try response.from.contact.identity(self.allocator),
-    }
-    defer self.allocator.free(session_id);
-    return self.sessions.getPtr(session_id);
-}
-
-pub fn findSessionFromId(self: Service, id: []const u8) ?Session {
-    var session: ?Session = null;
-    var sessions_iter = self.sessions.valueIterator();
-    while (sessions_iter.next()) |sesh| {
-        if (std.mem.eql(u8, sesh.identity, id)) {
-            session = sesh.*;
-        }
-    }
-    return session;
 }
 
 pub fn serverAddress(self: Service) headers.Address {
@@ -81,7 +50,7 @@ pub fn serverAddress(self: Service) headers.Address {
 /// Accepts a SIP message for an established session. All SIP messages will get
 /// routed through this to the appropriate handler for that method.
 pub fn handleMessage(self: *Service, connection: Connection, message: []const u8) !void {
-    if (mem.startsWith(u8, message, "SIP/2.0")) {
+    if (std.mem.startsWith(u8, message, "SIP/2.0")) {
         var response = Response.init();
         defer response.deinit(self.allocator);
         try response.parse(self.allocator, message);
@@ -94,20 +63,12 @@ pub fn handleMessage(self: *Service, connection: Connection, message: []const u8
 
         self.handleRequest(connection, request) catch |err| {
             switch (err) {
-                Session.SessionError.NotRegistered => {
-                    // TODO this error handling can fail and crash the server
-                    // This error is for cases where a session wasn't found. Create a temporary one to send a response.
-                    const id = try request.from.contact.identity(self.allocator);
-                    defer self.allocator.free(id);
-                    debug.print("Recieved message from unregistered client {s}\n", .{id});
-                    var temp_session = try Session.init(self.allocator, self.io, connection, request);
-                    defer temp_session.deinit();
-
-                    var response = try Response.initFromRequest(self.allocator, request);
-                    response.status = .forbidden;
-                    try temp_session.sendResponse(response);
+                ServiceError.NotRegistered => {
+                    Registrar.rejectUnregisteredRequest(self.allocator, self.io, connection, request) catch |reject_err| {
+                        std.debug.print("Failed to reject unregistered message\n", .{reject_err});
+                    };
                 },
-                Session.SessionError.RecipientNotFound => {
+                ServiceError.RecipientNotFound => {
                     const session = try self.sessionFromMessage(.{ .request = request }) orelse unreachable;
 
                     var response = try Response.initFromRequest(self.allocator, request);
@@ -115,7 +76,7 @@ pub fn handleMessage(self: *Service, connection: Connection, message: []const u8
                     try session.sendResponse(response);
                 },
                 else => {
-                    debug.print("Unknown error\n", .{});
+                    std.debug.print("Unknown error\n", .{});
                 },
             }
         };
@@ -143,19 +104,8 @@ fn handleRequest(self: *Service, connection: Connection, request: Request) !void
 }
 
 fn handleRegisterRequest(self: *Service, connection: Connection, request: Request) !void {
-    const session_id = try request.from.contact.identity(self.allocator);
-
-    //Check to see if a session exists for the remote address, if not create one
-    var session = try self.sessionFromMessage(.{ .request = request }) orelse blk: {
-        debug.print("REGISTER - {s} session created\n", .{session_id});
-        var new_session = try Session.init(self.allocator, self.io, connection, request);
-        try self.sessions.put(session_id, new_session);
-        break :blk &new_session;
-    };
-
-    const session_duration: i64 = @intCast(request.expires * 1000);
-    const ts = std.Io.Timestamp.now(self.io, .real);
-    session.expires = ts.addDuration(std.Io.Duration.fromMilliseconds(session_duration)).toMilliseconds();
+    var registration = try self.registrar.getOrCreate(self.allocator, connection, request);
+    registration.setExpiration(self.io, @intCast(request.expires));
 
     var response = try Response.initFromRequest(self.allocator, request);
     defer response.deinit(self.allocator);
@@ -168,11 +118,11 @@ fn handleRegisterRequest(self: *Service, connection: Connection, request: Reques
         });
     }
 
-    try session.sendResponse(response);
+    try registration.sendMessage(self.gpa, self.io, .{ .response = response });
 }
 
 fn handleInviteRequest(self: *Service, request: Request) !void {
-    const session = try self.sessionFromMessage(.{ .request = request }) orelse return Session.SessionError.NotRegistered;
+    const session = try self.sessionFromMessage(.{ .request = request }) orelse return ServiceError.NotRegistered;
 
     // Let the send know we're trying to call the recipient
     var trying_response = try Response.initFromRequest(self.allocator, request);
@@ -187,7 +137,7 @@ fn handleInviteRequest(self: *Service, request: Request) !void {
     defer self.allocator.free(to_identity);
 
     var recipient_session = self.findSessionFromId(to_identity) orelse {
-        return Session.SessionError.RecipientNotFound;
+        return ServiceError.RecipientNotFound;
     };
 
     var new_request = try request.dupe(self.allocator);
@@ -214,7 +164,7 @@ fn handleInviteRequest(self: *Service, request: Request) !void {
 }
 
 fn handleUnknownRequest(self: Service, request: Request) !void {
-    const session = try self.sessionFromMessage(.{ .request = request }) orelse return Session.SessionError.NotRegistered;
+    const session = try self.sessionFromMessage(.{ .request = request }) orelse return ServiceError.NotRegistered;
 
     //Process the message for the session
     // const session = sessions.getPtr(remote_address) orelse unreachable;
@@ -226,7 +176,7 @@ fn handleUnknownRequest(self: Service, request: Request) !void {
 }
 
 fn forwardResponse(self: *Service, response: Response) !void {
-    const session = try self.sessionFromMessage(.{ .response = response }) orelse return Session.SessionError.NotRegistered;
+    const session = try self.sessionFromMessage(.{ .response = response }) orelse return ServiceError.NotRegistered;
     _ = session;
 
     const to_contact = response.to orelse return Request.RequestError.InvalidMessage; //TODO move this error to a MessageError type along with the union above
@@ -234,7 +184,7 @@ fn forwardResponse(self: *Service, response: Response) !void {
     defer self.allocator.free(to_identity);
 
     var recipient_session = self.findSessionFromId(to_identity) orelse {
-        return Session.SessionError.RecipientNotFound;
+        return ServiceError.RecipientNotFound;
     };
 
     try recipient_session.sendResponse(response); //TODO i probably need to update some fields here...
@@ -254,18 +204,18 @@ test "Server creates new session from REGISTER request" {
         "Content-Length:  0\r\n" ++
         "\r\n";
 
-    var request = Request.init(testing.allocator);
+    var request = Request.init(std.testing.allocator);
     defer request.deinit();
     try request.parse(request_text);
 
-    var response = Response.init(testing.allocator);
+    var response = Response.init(std.testing.allocator);
     defer response.deinit();
-    var session = try Service.init(testing.allocator);
+    var session = try Service.init(std.testing.allocator);
     defer session.deinit();
     try session.handleMessage(request, &response);
 
     //TODO make this more thorough
-    try testing.expectEqual(response.status, Response.StatusCode.ok);
-    try testing.expectEqualStrings(response.call_id, request.call_id);
-    try testing.expectEqual(response.sequence.?.number, request.sequence.?.number);
+    try std.testing.expectEqual(response.status, Response.StatusCode.ok);
+    try std.testing.expectEqualStrings(response.call_id, request.call_id);
+    try std.testing.expectEqual(response.sequence.?.number, request.sequence.?.number);
 }

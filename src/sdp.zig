@@ -13,7 +13,7 @@ const Origin = struct {
     username: []const u8,
     session_id: u32,
     session_version: u32,
-    address: std.net.Address,
+    address: std.Io.net.IpAddress,
 };
 
 const Time = struct {
@@ -30,7 +30,7 @@ pub const SDP = struct {
     uri: ?std.Uri,
     email: ?[]const u8,
     phone: ?[]const u8,
-    connectionInfo: ?std.net.Address,
+    connectionInfo: ?std.Io.net.IpAddress,
     bandwidth: ?[]const u8,
     times: []Time,
 
@@ -45,7 +45,7 @@ pub fn parse(allocator: *std.mem.Allocator, description: []const u8) !SDP {
 
     var lines = std.mem.splitScalar(u8, description, '\n');
     var expected_field: []const u8 = "v";
-    var times = std.ArrayList(Time).init(allocator.*);
+    var times: std.ArrayList(Time) = .empty;
     while (lines.next()) |line| {
         const field = line[0];
         if (std.mem.indexOfScalar(u8, expected_field, field) == null) {
@@ -93,7 +93,7 @@ pub fn parse(allocator: *std.mem.Allocator, description: []const u8) !SDP {
             },
             't' => {
                 const time = try parseTime(line);
-                try times.append(time);
+                try times.append(allocator.*, time);
                 expected_field = "trkam";
             },
             'r' => {
@@ -119,7 +119,7 @@ pub fn parse(allocator: *std.mem.Allocator, description: []const u8) !SDP {
         }
     }
 
-    sdp.times = try times.toOwnedSlice();
+    sdp.times = try times.toOwnedSlice(allocator.*);
     return sdp;
 }
 
@@ -128,7 +128,7 @@ fn parseVersion(line: []const u8) DescriptionError![]const u8 {
     return line[2..];
 }
 
-fn readConnection(conn_string: []const u8) !std.net.Address {
+fn readConnection(conn_string: []const u8) !std.Io.net.IpAddress {
     var conn_tokens = std.mem.splitScalar(u8, conn_string, ' ');
     const net_type = conn_tokens.next() orelse return DescriptionError.InvalidConnectionInfo;
     if (!std.mem.eql(u8, net_type, "IN")) return DescriptionError.InvalidConnectionInfo;
@@ -141,9 +141,9 @@ fn readConnection(conn_string: []const u8) !std.net.Address {
         const ttl = std.mem.indexOfScalar(u8, address, '/');
         if (ttl != null) end = ttl.?;
 
-        return try std.net.Address.parseIp4(address[0..end], 0);
+        return try std.Io.net.IpAddress.parseIp4(address[0..end], 0);
     } else if (std.mem.eql(u8, address_type, "IP6")) {
-        return try std.net.Address.parseIp6(address, 0);
+        return try std.Io.net.IpAddress.parseIp6(address, 0);
     } else return DescriptionError.InvalidConnectionInfo;
 }
 
@@ -182,7 +182,7 @@ fn parsePhone(line: []const u8) []const u8 {
     return line[2..];
 }
 
-fn parseConnectionInfo(line: []const u8) !std.net.Address {
+fn parseConnectionInfo(line: []const u8) !std.Io.net.IpAddress {
     return try readConnection(line[2..]);
 }
 

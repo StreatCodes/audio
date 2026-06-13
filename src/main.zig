@@ -6,7 +6,11 @@ const server = @import("./sip/server.zig");
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-    try server.startServer(gpa, io, "0.0.0.0", 5060);
+
+    const s = try server.startServer(gpa, io, "0.0.0.0", 5060);
+    defer s.close();
+
+    //TODO while(s.next())
 
     // var dir = std.fs.cwd();
     // const file_name = "./wars.wav";
