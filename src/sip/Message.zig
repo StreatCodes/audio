@@ -14,10 +14,10 @@ arena: std.heap.ArenaAllocator,
 raw_message: []const u8,
 
 start_line: headers.StartLine,
-via: std.ArrayList(headers.ViaHeader),
-contact: std.ArrayList(headers.ContactHeader),
-allow: std.ArrayList(headers.Method),
-supported: std.ArrayList(headers.Extension),
+via: std.ArrayList(headers.ViaHeader) = .empty,
+contact: std.ArrayList(headers.ContactHeader) = .empty,
+allow: std.ArrayList(headers.Method) = .empty,
+supported: std.ArrayList(headers.Extension) = .empty,
 from: ?headers.FromHeader = null,
 to: ?headers.ToHeader = null,
 sequence: ?headers.Sequence = null,
@@ -41,10 +41,6 @@ pub fn initResponse(gpa: std.mem.Allocator, status: headers.StatusCode) Message 
                 .status = status,
             },
         },
-        .via = .empty,
-        .contact = .empty,
-        .allow = .empty,
-        .supported = .empty,
     };
 }
 
@@ -62,10 +58,6 @@ pub fn parse(gpa: std.mem.Allocator, message_text: []const u8) !Message {
         .arena = std.heap.ArenaAllocator{ .child_allocator = gpa, .state = .init },
         .start_line = start_line,
         .raw_message = message_text,
-        .via = .empty,
-        .contact = .empty,
-        .allow = .empty,
-        .supported = .empty,
     };
 
     const allocator = message.arena.allocator();
