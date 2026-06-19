@@ -1,6 +1,8 @@
 const std = @import("std");
 const Message = @import("Message.zig");
 
+const UDP_MAX_PAYLOAD = 65507;
+
 pub fn startServer(gpa: std.mem.Allocator, io: std.Io, listen_address: []const u8, listen_port: u16) !Server {
     const address = try std.Io.net.IpAddress.parse(listen_address, listen_port);
     const socket = try std.Io.net.IpAddress.bind(&address, io, .{ .mode = .dgram });
@@ -14,8 +16,6 @@ pub fn startServer(gpa: std.mem.Allocator, io: std.Io, listen_address: []const u
         .buffer = try gpa.alloc(u8, UDP_MAX_PAYLOAD),
     };
 }
-
-const UDP_MAX_PAYLOAD = 65507;
 
 const Server = struct {
     gpa: std.mem.Allocator,
