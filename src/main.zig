@@ -1,16 +1,15 @@
 const std = @import("std");
 const wav = @import("./wav.zig");
 const l16 = @import("./l16.zig");
-const server = @import("./sip/server.zig");
+const Service = @import("sip_service/Service.zig");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    const s = try server.startServer(gpa, io, "0.0.0.0", 5060);
-    defer s.close();
-
-    //TODO while(s.next())
+    var service = try Service.init(gpa, io);
+    defer service.deinit();
+    try service.start("0.0.0.0", 5060);
 
     // var dir = std.fs.cwd();
     // const file_name = "./wars.wav";

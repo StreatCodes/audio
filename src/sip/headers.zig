@@ -64,6 +64,13 @@ pub const ContactHeader = struct {
     contact: Contact,
     expires: ?u32,
 
+    pub fn clone(original: ContactHeader, gpa: std.mem.Allocator) !ContactHeader {
+        var new = original;
+        new.contact = try original.contact.clone(gpa);
+
+        return new;
+    }
+
     pub fn parse(header_text: []const u8) !ContactHeader {
         const header_value = getHeaderValue(header_text);
         var contact_header = ContactHeader{
@@ -94,6 +101,15 @@ pub const Contact = struct {
     host: []const u8,
     port: ?u16 = null,
     ob: bool = false,
+
+    pub fn clone(original: Contact, gpa: std.mem.Allocator) !Contact {
+        var new = original;
+        if (original.name) |name| new.name = try gpa.dupe(u8, name);
+        new.user = try gpa.dupe(u8, original.user);
+        new.host = try gpa.dupe(u8, original.host);
+
+        return new;
+    }
 
     fn addressEnd(char: u8) bool {
         return char == '>' or char == ';';
@@ -223,6 +239,13 @@ pub const Address = struct {
     host: []const u8,
     port: u16,
 
+    pub fn clone(original: Address, gpa: std.mem.Allocator) !Address {
+        var new = original;
+        new.host = try gpa.dupe(u8, original.host);
+
+        return new;
+    }
+
     /// Parses an address in the following format
     /// [192.168.1.130:54216]
     pub fn parse(address_text: []const u8) !Address {
@@ -290,6 +313,17 @@ pub const ViaHeader = struct {
     received: ?[]const u8 = null, //source ip of the request
     maddr: ?[]const u8 = null, //multicast address
     sent_by: ?[]const u8 = null, //sender address when using multicast
+
+    pub fn clone(original: ViaHeader, gpa: std.mem.Allocator) !ViaHeader {
+        var new = original;
+        new.address = try original.address.clone(gpa);
+        new.branch = try gpa.dupe(u8, original.branch);
+        if (original.received) |received| new.received = try gpa.dupe(u8, received);
+        if (original.maddr) |maddr| new.maddr = try gpa.dupe(u8, maddr);
+        if (original.sent_by) |sent_by| new.sent_by = try gpa.dupe(u8, sent_by);
+
+        return new;
+    }
 
     fn isWhitespace(char: u8) bool {
         return char == ' ' or char == '\n' or char == '\t';
@@ -401,6 +435,13 @@ pub const FromHeader = struct {
     contact: Contact,
     tag: ?[]const u8,
 
+    pub fn clone(original: FromHeader, gpa: std.mem.Allocator) !FromHeader {
+        var new = original;
+        new.contact = try original.contact.clone(gpa);
+
+        return new;
+    }
+
     pub fn parse(header_text: []const u8) !FromHeader {
         const contact_text = getHeaderValue(header_text);
 
@@ -421,6 +462,13 @@ pub const FromHeader = struct {
 pub const RecordRoute = struct {
     address: Address,
     lr: bool,
+
+    pub fn clone(original: RecordRoute, gpa: std.mem.Allocator) !RecordRoute {
+        var new = original;
+        new.address = try original.address.clone(gpa);
+
+        return new;
+    }
 
     pub fn parse(raw_header_text: []const u8) !RecordRoute {
         var header_text = raw_header_text;
@@ -624,6 +672,13 @@ pub const StartLine = union(enum) {
     request: RequestLine,
     response: ResponseLine,
 
+    pub fn clone(original: StartLine, gpa: std.mem.Allocator) !StartLine {
+        switch (original) {
+            .request => |req| return .{ .request = try req.clone(gpa) },
+            .response => |res| return .{ .response = try res.clone(gpa) },
+        }
+    }
+
     pub fn parse(line: []const u8) !StartLine {
         if (std.mem.startsWith(u8, line, "SIP/2.0")) {
             return .{ .response = try ResponseLine.parse(line) };
@@ -648,6 +703,14 @@ pub const RequestLine = struct {
     uri: std.Uri,
     version: []const u8,
 
+    //TODO .uri is not copied, not even sure how to.
+    pub fn clone(original: RequestLine, gpa: std.mem.Allocator) !RequestLine {
+        var new = original;
+        new.version = try gpa.dupe(u8, original.version);
+
+        return new;
+    }
+
     pub fn parse(line: []const u8) !RequestLine {
         var parts = std.mem.splitScalar(u8, line, ' ');
 
@@ -666,6 +729,13 @@ pub const RequestLine = struct {
 pub const ResponseLine = struct {
     version: []const u8,
     status: StatusCode,
+
+    pub fn clone(original: ResponseLine, gpa: std.mem.Allocator) !ResponseLine {
+        var new = original;
+        new.version = try gpa.dupe(u8, original.version);
+
+        return new;
+    }
 
     pub fn parse(line: []const u8) !ResponseLine {
         var parts = std.mem.splitScalar(u8, line, ' ');

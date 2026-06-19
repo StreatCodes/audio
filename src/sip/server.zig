@@ -1,10 +1,9 @@
 const std = @import("std");
-const Message = @import("message.zig").Message;
+const Message = @import("Message.zig");
 
 pub fn startServer(gpa: std.mem.Allocator, io: std.Io, listen_address: []const u8, listen_port: u16) !Server {
     const address = try std.Io.net.IpAddress.parse(listen_address, listen_port);
     const socket = try std.Io.net.IpAddress.bind(&address, io, .{ .mode = .dgram });
-    defer socket.close(io);
 
     std.debug.print("Listening {s}:{d}\n", .{ listen_address, listen_port });
 
@@ -31,10 +30,10 @@ const Server = struct {
         const trimmed_message = std.mem.trimStart(u8, message.data, "\r\n");
 
         //Clients often send empty messages (\r\n) for keep alives, ignore them
-        if (trimmed_message.len == 0) next(iter);
+        if (trimmed_message.len == 0) return next(iter);
         std.debug.print("Recieved: [{s}]\n", .{trimmed_message});
 
-        return try Message.parseMessage(iter.gpa, trimmed_message, iter.socket, message.from);
+        return try Message.parse(iter.gpa, trimmed_message);
     }
 
     pub fn close(iter: Server) void {
