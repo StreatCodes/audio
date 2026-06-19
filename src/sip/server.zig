@@ -11,6 +11,7 @@ pub fn startServer(gpa: std.mem.Allocator, io: std.Io, listen_address: []const u
         .gpa = gpa,
         .io = io,
         .socket = socket,
+        .buffer = try gpa.alloc(u8, UDP_MAX_PAYLOAD),
     };
 }
 
@@ -20,11 +21,10 @@ const Server = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     socket: std.Io.net.Socket,
+    buffer: []u8,
 
     pub fn next(iter: Server) !?Message {
-        const buffer = try iter.gpa.alloc(u8, UDP_MAX_PAYLOAD);
-        defer iter.gpa.free(buffer);
-        const message = try iter.socket.receive(iter.io, buffer);
+        const message = try iter.socket.receive(iter.io, iter.buffer);
 
         //Per the spec we need to trim any leading line breaks
         const trimmed_message = std.mem.trimStart(u8, message.data, "\r\n");
@@ -37,6 +37,7 @@ const Server = struct {
     }
 
     pub fn close(iter: Server) void {
+        iter.gpa.free(iter.buffer);
         iter.socket.close(iter.io);
     }
 };
