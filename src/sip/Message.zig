@@ -89,6 +89,7 @@ pub fn parse(gpa: std.mem.Allocator, raw_text: []const u8) !Message {
         .start_line = undefined,
         .raw_message = undefined,
     };
+    errdefer message.arena.deinit();
 
     // Use our internal arena for all allocations, we can deinit later with a single call
     const allocator = message.arena.allocator();
@@ -279,6 +280,18 @@ pub fn branch(self: Message) ![]const u8 {
         return MessageError.InvalidMessage;
     }
     return self.via.items[0].branch;
+}
+
+//streats@192.168.1.130
+pub fn toIdentity(self: Message, allocator: std.mem.Allocator) ![]const u8 {
+    const to = self.to orelse return MessageError.InvalidMessage;
+    return try std.fmt.allocPrint(allocator, "{s}@{s}", .{ to.contact.user, to.contact.host });
+}
+
+//streats@192.168.1.130
+pub fn fromIdentity(self: Message, allocator: std.mem.Allocator) ![]const u8 {
+    const from = self.from orelse return MessageError.InvalidMessage;
+    return try std.fmt.allocPrint(allocator, "{s}@{s}", .{ from.contact.user, from.contact.host });
 }
 
 test "sip can correctly parse a SIP REGISTER message" {

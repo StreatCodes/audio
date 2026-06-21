@@ -17,10 +17,27 @@ const Transaction = @This();
 method: headers.Method,
 state: TransactionState,
 
+// TODO Handle AUTH!!
 pub fn handleRegister(transaction: Transaction, service: *Service, message: Message) !TransactionState {
     _ = transaction;
-    _ = service;
-    _ = message;
+    const expires = message.expires orelse return Message.MessageError.BadRequest;
+    const id = try message.toIdentity(service.gpa);
 
-    return .proceeding; //TODO remove
+    //TODO handle expires = 0 (logout)
+
+    if (service.registrations.getPtr(id)) |registration| {
+        defer service.gpa.free(id);
+        registration.registered_at = .now(service.io, .real);
+        registration.expires = expires;
+
+        //TODO send response
+    } else {
+        // TODO create registration
+        // service.registrations.put(id, .{
+        //     .connection = message
+        // })
+
+    }
+
+    return .completed;
 }

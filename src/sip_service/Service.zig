@@ -1,7 +1,6 @@
 const std = @import("std");
 const headers = @import("../sip/headers.zig");
-const Registrar = @import("Registrar.zig");
-// const Registration = @import("Registrar.zig").Registration;
+const Registration = @import("Registration.zig");
 const sip = @import("../sip/server.zig");
 const Message = @import("../sip/Message.zig");
 const Transaction = @import("Transaction.zig");
@@ -18,20 +17,21 @@ pub const ServiceError = error{
 gpa: std.mem.Allocator,
 io: std.Io,
 transactions: std.StringHashMap(Transaction),
-// registrar: Registrar,
+registrations: std.StringHashMap(Registration),
 
 pub fn init(gpa: std.mem.Allocator, io: std.Io) !Service {
     return Service{
         .gpa = gpa,
         .io = io,
         .transactions = .init(gpa),
-        // .registrar = Registrar.init(gpa),
+        .registrations = .init(gpa),
     };
 }
 
 pub fn deinit(service: *Service) void {
-    _ = service;
-    // service.registrar.deinit(service.allocator);
+    // TODO free keys
+    service.transactions.deinit();
+    service.registrations.deinit();
 }
 
 pub fn start(service: *Service, listen_address: []const u8, listen_port: u16) !void {
@@ -41,7 +41,7 @@ pub fn start(service: *Service, listen_address: []const u8, listen_port: u16) !v
     // TODO i feel like server.next() should catch internally
     while (try server.next()) |message| {
         defer message.deinit();
-        const branch = try message.branch();
+        const branch = try message.branch(); // TODO the underlying key gets freed after the message is handled. memory bug
 
         if (service.transactions.get(branch)) |transaction| {
             std.debug.print("existing transaction {s}\n", .{branch});
