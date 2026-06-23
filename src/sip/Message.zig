@@ -6,6 +6,7 @@ pub const MessageError = error{
     RequiredField,
     BadRequest,
     BadResponse,
+    MessageTooLarge,
 };
 
 const Message = @This();
@@ -29,6 +30,7 @@ accept: ?[]const u8 = null,
 record_route: ?headers.RecordRoute = null,
 server: ?[]const u8 = null,
 content_type: ?[]const u8 = null,
+content_len: u32 = 0,
 body: []const u8 = "",
 
 pub fn initResponse(gpa: std.mem.Allocator, status: headers.StatusCode) Message {
@@ -83,7 +85,60 @@ pub fn clone(original: Message, gpa: std.mem.Allocator) !Message {
     return new_message;
 }
 
+fn readUntilString(reader: *std.Io.Reader, buffer: []u8, string: []const u8) ![]u8 {
+    var len: usize = 0;
+
+    while (len < buffer.len) {
+        const byte = try reader.takeByte();
+        buffer[len] = byte;
+        len += 1;
+
+        if (len >= string.len and std.mem.eql(u8, buffer[len - string.len .. len], string)) {
+            return buffer[0 .. len - string.len];
+        }
+    }
+
+    return MessageError.MessageTooLarge;
+}
+
+pub fn readMessage(gpa: std.mem.Allocator, reader: *std.Io.Reader, buffer: []u8) !Message {
+    const header_text = try readUntilString(reader, buffer, "\r\n\r\n");
+
+    var message = try parseHeaders(gpa, header_text);
+
+    if (message.content_len + header_text.len > buffer.len) return MessageError.MessageTooLarge;
+
+    const body_text = buffer[header_text.len .. header_text.len + message.content_len];
+    try reader.readSliceAll(body_text);
+
+    message.body = body_text;
+
+    return message;
+
+    //TODO trim these? not sure if necessary
+    // std.debug.print("message: [{s}]\n", .{message});
+
+    //Per the spec we need to trim any leading line breaks
+    // const trimmed_message = std.mem.trimStart(u8, message.data, "\r\n");
+
+    // //Clients often send empty messages (\r\n) for keep alives, ignore them
+    // if (trimmed_message.len == 0) return next(iter);
+    // std.debug.print("Recieved: [{s}]\n", .{trimmed_message});
+
+    // return try Message.parse(iter.gpa, trimmed_message);
+}
+
 pub fn parse(gpa: std.mem.Allocator, raw_text: []const u8) !Message {
+    const header_len = std.mem.find(u8, raw_text, "\r\n\r\n") orelse return MessageError.InvalidMessage;
+    const header_text = raw_text[0..header_len];
+
+    var message = try parseHeaders(gpa, header_text);
+    message.body = raw_text[header_len + 4 ..];
+
+    return message;
+}
+
+pub fn parseHeaders(gpa: std.mem.Allocator, raw_text: []const u8) !Message {
     var message = Message{
         .arena = std.heap.ArenaAllocator{ .child_allocator = gpa, .state = .init },
         .start_line = undefined,
@@ -137,7 +192,7 @@ pub fn parse(gpa: std.mem.Allocator, raw_text: []const u8) !Message {
                 }
             },
             .content_type => message.content_type = value,
-            .content_length => {}, //Derived from body.len
+            .content_length => message.content_len = try std.fmt.parseInt(u32, value, 10),
             .supported => {
                 var iter = std.mem.tokenizeScalar(u8, value, ',');
                 while (iter.next()) |extension_text| {
@@ -148,7 +203,6 @@ pub fn parse(gpa: std.mem.Allocator, raw_text: []const u8) !Message {
         }
     }
 
-    message.body = lines.rest();
     return message;
 }
 
@@ -560,4 +614,77 @@ test "sip can correctly encode a basic response" {
         "\r\n";
 
     try std.testing.expectEqualStrings(message, expected_message);
+}
+
+test "sip can correctly parse a SIP INVITE message with a body using a reader" {
+    const sdp_body = "v=0\r\n" ++
+        "o=alice 2890844526 2890844526 IN IP4 192.168.1.100\r\n" ++
+        "s=-\r\n" ++
+        "c=IN IP4 192.168.1.100\r\n" ++
+        "t=0 0\r\n" ++
+        "m=audio 49170 RTP/AVP 0\r\n";
+
+    const message_text = "INVITE sip:bob@example.com SIP/2.0\r\n" ++
+        "Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds\r\n" ++
+        "Max-Forwards: 70\r\n" ++
+        "From: \"Alice\" <sip:alice@example.com>;tag=1928301774\r\n" ++
+        "To: \"Bob\" <sip:bob@example.com>\r\n" ++
+        "Call-ID: a84b4c76e66710@192.168.1.100\r\n" ++
+        "CSeq: 314159 INVITE\r\n" ++
+        "Contact: <sip:alice@192.168.1.100:5060>\r\n" ++
+        "Content-Type: application/sdp\r\n" ++
+        "Content-Length: " ++ std.fmt.comptimePrint("{d}", .{sdp_body.len}) ++ "\r\n" ++
+        "\r\n" ++
+        sdp_body;
+
+    const allocator = std.testing.allocator;
+    var reader = std.Io.Reader.fixed(message_text);
+
+    const max_sip_size = 65535;
+    const buffer = try allocator.alloc(u8, max_sip_size);
+    defer allocator.free(buffer);
+    var message = try Message.readMessage(allocator, &reader, buffer);
+    defer message.deinit();
+
+    try std.testing.expectEqual(message.start_line.request.method, .invite);
+    try std.testing.expectEqualStrings(message.start_line.request.uri.scheme, "sip");
+    try std.testing.expectEqual(message.max_forwards.?, 70);
+    try std.testing.expectEqualStrings(message.call_id.?, "a84b4c76e66710@192.168.1.100");
+    try std.testing.expectEqualStrings(message.content_type.?, "application/sdp");
+    try std.testing.expectEqualStrings(message.body, sdp_body);
+    try std.testing.expectEqual(message.sequence.?.number, 314159);
+    try std.testing.expectEqual(message.sequence.?.method, .invite);
+}
+
+test "sip can correctly parse a SIP REGISTER message using a reader" {
+    const message_text = "REGISTER sip:localhost SIP/2.0\r\n" ++
+        "Via: SIP/2.0/UDP 172.20.10.4:55595;rport;branch=z9hG4bKPj97wgnQ5d7IM3cfDd2QYcYf9H8hqJLxit\r\n" ++
+        "Max-Forwards: 49\r\n" ++
+        "From: \"Streats\" <sip:streats@localhost>;tag=Z.hw-WnzbyImNj0P.WWHJW9zhtQc1lm8\r\n" ++
+        "To: \"Streats\" <sip:streats@localhost>\r\n" ++
+        "Call-ID: xGAGzEIoe5SHqQnmK5W2jWsIF7kThRbn\r\n" ++
+        "CSeq: 37838 REGISTER\r\n" ++
+        "User-Agent: Telephone 1.6\r\n" ++
+        "Contact: \"Streats\" <sip:streats@172.20.10.4:55595;ob>;expires=0\r\n" ++
+        "Expires: 300\r\n" ++
+        "Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS\r\n" ++
+        "Content-Length:  0\r\n" ++
+        "\r\n";
+
+    const allocator = std.testing.allocator;
+    var reader = std.Io.Reader.fixed(message_text);
+
+    const max_sip_size = 65535;
+    const buffer = try allocator.alloc(u8, max_sip_size);
+    defer allocator.free(buffer);
+    var message = try Message.readMessage(allocator, &reader, buffer);
+    defer message.deinit();
+
+    try std.testing.expectEqual(message.start_line.request.method, .register);
+    try std.testing.expectEqualStrings(message.start_line.request.uri.scheme, "sip");
+    try std.testing.expectEqual(message.contact.items[0].expires.?, 0);
+    try std.testing.expectEqual(message.max_forwards.?, 49);
+    try std.testing.expectEqualStrings(message.call_id.?, "xGAGzEIoe5SHqQnmK5W2jWsIF7kThRbn");
+    try std.testing.expectEqual(message.expires.?, 300);
+    try std.testing.expect(std.mem.eql(u8, message.body, ""));
 }
