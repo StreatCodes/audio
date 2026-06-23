@@ -114,18 +114,6 @@ pub fn readMessage(gpa: std.mem.Allocator, reader: *std.Io.Reader, buffer: []u8)
     message.body = body_text;
 
     return message;
-
-    //TODO trim these? not sure if necessary
-    // std.debug.print("message: [{s}]\n", .{message});
-
-    //Per the spec we need to trim any leading line breaks
-    // const trimmed_message = std.mem.trimStart(u8, message.data, "\r\n");
-
-    // //Clients often send empty messages (\r\n) for keep alives, ignore them
-    // if (trimmed_message.len == 0) return next(iter);
-    // std.debug.print("Recieved: [{s}]\n", .{trimmed_message});
-
-    // return try Message.parse(iter.gpa, trimmed_message);
 }
 
 pub fn parse(gpa: std.mem.Allocator, raw_text: []const u8) !Message {
@@ -687,4 +675,68 @@ test "sip can correctly parse a SIP REGISTER message using a reader" {
     try std.testing.expectEqualStrings(message.call_id.?, "xGAGzEIoe5SHqQnmK5W2jWsIF7kThRbn");
     try std.testing.expectEqual(message.expires.?, 300);
     try std.testing.expect(std.mem.eql(u8, message.body, ""));
+}
+
+test "sip can correctly read two SIP messages from a reader" {
+    const sdp_body = "v=0\r\n" ++
+        "o=alice 2890844526 2890844526 IN IP4 192.168.1.100\r\n" ++
+        "s=-\r\n" ++
+        "c=IN IP4 192.168.1.100\r\n" ++
+        "t=0 0\r\n" ++
+        "m=audio 49170 RTP/AVP 0\r\n";
+
+    const message_text = "REGISTER sip:localhost SIP/2.0\r\n" ++
+        "Via: SIP/2.0/UDP 172.20.10.4:55595;rport;branch=z9hG4bKPj97wgnQ5d7IM3cfDd2QYcYf9H8hqJLxit\r\n" ++
+        "Max-Forwards: 49\r\n" ++
+        "From: \"Streats\" <sip:streats@localhost>;tag=Z.hw-WnzbyImNj0P.WWHJW9zhtQc1lm8\r\n" ++
+        "To: \"Streats\" <sip:streats@localhost>\r\n" ++
+        "Call-ID: xGAGzEIoe5SHqQnmK5W2jWsIF7kThRbn\r\n" ++
+        "CSeq: 37838 REGISTER\r\n" ++
+        "User-Agent: Telephone 1.6\r\n" ++
+        "Contact: \"Streats\" <sip:streats@172.20.10.4:55595;ob>;expires=0\r\n" ++
+        "Expires: 300\r\n" ++
+        "Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS\r\n" ++
+        "Content-Length:  0\r\n" ++
+        "\r\n" ++
+        "INVITE sip:bob@example.com SIP/2.0\r\n" ++
+        "Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK776asdhds\r\n" ++
+        "Max-Forwards: 70\r\n" ++
+        "From: \"Alice\" <sip:alice@example.com>;tag=1928301774\r\n" ++
+        "To: \"Bob\" <sip:bob@example.com>\r\n" ++
+        "Call-ID: a84b4c76e66710@192.168.1.100\r\n" ++
+        "CSeq: 314159 INVITE\r\n" ++
+        "Contact: <sip:alice@192.168.1.100:5060>\r\n" ++
+        "Content-Type: application/sdp\r\n" ++
+        "Content-Length: " ++ std.fmt.comptimePrint("{d}", .{sdp_body.len}) ++ "\r\n" ++
+        "\r\n" ++
+        sdp_body;
+
+    const allocator = std.testing.allocator;
+    var reader = std.Io.Reader.fixed(message_text);
+
+    const max_sip_size = 65535;
+    const buffer = try allocator.alloc(u8, max_sip_size);
+    defer allocator.free(buffer);
+    var message_1 = try Message.readMessage(allocator, &reader, buffer);
+    defer message_1.deinit();
+
+    try std.testing.expectEqual(message_1.start_line.request.method, .register);
+    try std.testing.expectEqualStrings(message_1.start_line.request.uri.scheme, "sip");
+    try std.testing.expectEqual(message_1.contact.items[0].expires.?, 0);
+    try std.testing.expectEqual(message_1.max_forwards.?, 49);
+    try std.testing.expectEqualStrings(message_1.call_id.?, "xGAGzEIoe5SHqQnmK5W2jWsIF7kThRbn");
+    try std.testing.expectEqual(message_1.expires.?, 300);
+    try std.testing.expect(std.mem.eql(u8, message_1.body, ""));
+
+    var message_2 = try Message.readMessage(allocator, &reader, buffer);
+    defer message_2.deinit();
+
+    try std.testing.expectEqual(message_2.start_line.request.method, .invite);
+    try std.testing.expectEqualStrings(message_2.start_line.request.uri.scheme, "sip");
+    try std.testing.expectEqual(message_2.max_forwards.?, 70);
+    try std.testing.expectEqualStrings(message_2.call_id.?, "a84b4c76e66710@192.168.1.100");
+    try std.testing.expectEqualStrings(message_2.content_type.?, "application/sdp");
+    try std.testing.expectEqualStrings(message_2.body, sdp_body);
+    try std.testing.expectEqual(message_2.sequence.?.number, 314159);
+    try std.testing.expectEqual(message_2.sequence.?.method, .invite);
 }
