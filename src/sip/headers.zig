@@ -350,7 +350,7 @@ pub const ViaHeader = struct {
 
         _ = reader.readUntil(isTransport);
         const protocol = reader.readWhile(isTransport);
-        if (!mem.eql(u8, protocol, "UDP")) return HeaderError.InvalidHeader;
+        if (!mem.eql(u8, protocol, "UDP") and !mem.eql(u8, protocol, "TCP")) return HeaderError.InvalidHeader;
         via_header.protocol = try TransportProtocol.fromString(protocol);
 
         const address_text = std.mem.trimStart(u8, reader.rest(), " ");
@@ -642,12 +642,16 @@ pub const Extension = enum {
     one_hundred_rel,
     no_refer_sub,
     timer,
+    outbound,
+    path,
 
     pub fn fromString(extension: []const u8) !Extension {
         if (std.mem.eql(u8, extension, "replaces")) return Extension.replaces;
         if (std.mem.eql(u8, extension, "100rel")) return Extension.one_hundred_rel;
         if (std.mem.eql(u8, extension, "norefersub")) return Extension.no_refer_sub;
         if (std.mem.eql(u8, extension, "timer")) return Extension.timer;
+        if (std.mem.eql(u8, extension, "outbound")) return Extension.outbound;
+        if (std.mem.eql(u8, extension, "path")) return Extension.path;
         debug.print("unknown extension: {s}\n", .{extension});
         return HeaderError.UnknownExtension;
     }
@@ -658,6 +662,8 @@ pub const Extension = enum {
             .one_hundred_rel => return "100rel",
             .no_refer_sub => return "norefersub",
             .timer => return "timer",
+            .outbound => return "outbound",
+            .path => return "path",
         }
     }
 };

@@ -1,7 +1,6 @@
 const std = @import("std");
 const headers = @import("../sip/headers.zig");
 const Registration = @import("Registration.zig");
-const sip = @import("../sip/server.zig");
 const Message = @import("../sip/Message.zig");
 const Transaction = @import("Transaction.zig");
 const TransactionState = Transaction.TransactionState;
@@ -35,12 +34,47 @@ pub fn deinit(service: *Service) void {
 }
 
 pub fn start(service: *Service, listen_address: []const u8, listen_port: u16) !void {
-    var server = try sip.startServer(service.gpa, service.io, listen_address, listen_port);
-    defer server.close();
+    const address = try std.Io.net.IpAddress.parse(listen_address, listen_port);
+    var server = try std.Io.net.IpAddress.listen(&address, service.io, .{});
+    defer server.deinit(service.io);
 
-    // TODO i feel like server.next() should catch internally
-    while (try server.next()) |message| {
+    std.debug.print("Starting server {s}:{d}\n", .{ listen_address, listen_port });
+
+    while (true) {
+        const stream = try server.accept(service.io);
+        std.debug.print("New connection {}\n", .{stream.socket.address});
+
+        //TODO not sure if this is ok to fire and forget
+        _ = service.io.async(handleConn, .{ service, stream });
+    }
+}
+
+pub fn handleConn(service: *Service, stream: std.Io.net.Stream) !void {
+    defer stream.close(service.io);
+    service.readMessages(stream) catch |err| {
+        switch (err) {
+            else => {
+                std.debug.print("Error reading message {}\n", .{err});
+            },
+        }
+    };
+
+    std.debug.print("Connection closed {}\n", .{stream.socket.address});
+}
+
+pub fn readMessages(service: *Service, stream: std.Io.net.Stream) !void {
+    const reader_buffer = try service.gpa.alloc(u8, 4096);
+    defer service.gpa.free(reader_buffer);
+    var reader = stream.reader(service.io, reader_buffer);
+
+    while (true) {
+        const max_sip_size = 65535;
+        const message_buffer = try service.gpa.alloc(u8, max_sip_size);
+        defer service.gpa.free(message_buffer);
+
+        var message = try Message.readMessage(service.gpa, &reader.interface, message_buffer);
         defer message.deinit();
+
         const branch = try message.branch(); // TODO the underlying key gets freed after the message is handled. memory bug
 
         if (service.transactions.get(branch)) |transaction| {
