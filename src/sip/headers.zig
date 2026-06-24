@@ -386,6 +386,26 @@ pub const ViaHeader = struct {
         if (self.sent_by) |sent_by| try buffer.print(allocator, ";sent-by={s}", .{sent_by});
         try buffer.appendSlice(allocator, "\r\n");
     }
+
+    pub fn setReceiveAddress(self: *ViaHeader, allocator: std.mem.Allocator, net_address: std.Io.net.IpAddress) !void {
+        switch (net_address) {
+            .ip4 => |addr| {
+                const host = try std.fmt.allocPrint(allocator, "{d}.{d}.{d}.{d}", .{
+                    addr.bytes[0],
+                    addr.bytes[1],
+                    addr.bytes[2],
+                    addr.bytes[3],
+                });
+
+                self.received = host;
+                self.rport = addr.port;
+            },
+            .ip6 => |addr| {
+                _ = addr;
+                @panic("TODO");
+            },
+        }
+    }
 };
 
 test "ViaHeader parses values into fields" {
@@ -432,6 +452,7 @@ pub const FromHeader = struct {
     pub fn clone(original: FromHeader, gpa: std.mem.Allocator) !FromHeader {
         var new = original;
         new.contact = try original.contact.clone(gpa);
+        if (original.tag) |tag| new.tag = try gpa.dupe(u8, tag);
 
         return new;
     }
@@ -450,6 +471,14 @@ pub const FromHeader = struct {
         try self.contact.encode(allocator, buffer);
         if (self.tag) |tag| try buffer.print(allocator, ";tag={s}", .{tag});
         try buffer.appendSlice(allocator, "\r\n");
+    }
+
+    /// Generates a cryptographically random tag on the header
+    pub fn generateTag(self: *FromHeader, allocator: std.mem.Allocator, io: std.Io) !void {
+        var buffer: [20]u8 = undefined;
+        try std.Io.randomSecure(io, &buffer);
+
+        self.tag = try std.fmt.allocPrint(allocator, "{x}", .{buffer});
     }
 };
 
@@ -786,3 +815,19 @@ pub const StatusCode = enum(u32) {
         return @enumFromInt(code);
     }
 };
+
+test "Generate tag populates the tag on a To/From header" {
+    var from = FromHeader{
+        .contact = .{
+            .host = "localhost",
+            .user = "mort",
+            .protocol = .sip,
+        },
+        .tag = null,
+    };
+
+    try from.generateTag(testing.allocator, testing.io);
+    defer testing.allocator.free(from.tag.?);
+
+    try testing.expectEqual(from.tag.?.len, 40);
+}

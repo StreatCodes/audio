@@ -74,15 +74,18 @@ pub fn readMessages(service: *Service, stream: std.Io.net.Stream) !void {
 
         var message = try Message.readMessage(service.gpa, &reader.interface, message_buffer);
         defer message.deinit();
+        std.debug.print("Recieved [{s}]\n", .{message.raw_message});
 
         const branch = try message.branch();
 
+        // Existing transaction
         if (try service.transactions.get(branch)) |transaction| {
             std.debug.print("existing transaction {s}\n", .{branch});
             try service.handleMessage(transaction, message);
-            continue;
+            return;
         }
 
+        // New transaction
         switch (message.start_line) {
             .request => |request_line| {
                 std.debug.print("new transaction {s}\n", .{branch});
@@ -90,6 +93,7 @@ pub fn readMessages(service: *Service, stream: std.Io.net.Stream) !void {
                 const transaction = Transaction{
                     .method = request_line.method,
                     .state = if (request_line.method == .invite) .proceeding else .trying,
+                    .stream = stream,
                 };
 
                 try service.transactions.put(branch, transaction);
@@ -113,12 +117,13 @@ pub fn handleMessage(service: *Service, transaction: Transaction, message: Messa
 
     // If the transaction is complete we can stop tracking it, otherwise update it
     const branch = try message.branch();
-    if (new_state == .terminated) {
+    if (new_state == .completed) {
         _ = try service.transactions.remove(branch);
     } else {
         try service.transactions.put(branch, .{
             .method = transaction.method,
             .state = new_state,
+            .stream = transaction.stream,
         });
     }
 }

@@ -50,37 +50,38 @@ pub fn deinit(message: Message) void {
     message.arena.deinit();
 }
 
-// TODO probably don't need this, instead we need to derive new requests and responses
-// based on a few key fields.
-pub fn clone(original: Message, gpa: std.mem.Allocator) !Message {
-    var new_message = original;
-    new_message.arena = std.heap.ArenaAllocator{ .child_allocator = gpa, .state = .init };
-    new_message.via = .empty;
-    new_message.contact = .empty;
-    new_message.allow = .empty;
-    new_message.supported = .empty;
-
+/// Generates a new response from incoming request.
+pub fn newResponse(original: Message, gpa: std.mem.Allocator, io: std.Io, status: headers.StatusCode) !Message {
+    var new_message = Message{
+        .raw_message = "",
+        .start_line = .{
+            .response = .{
+                .version = "SIP/2.0",
+                .status = status,
+            },
+        },
+        .arena = std.heap.ArenaAllocator{ .child_allocator = gpa, .state = .init },
+        .via = .empty,
+        .contact = .empty,
+        .allow = .empty,
+        .supported = .empty,
+    };
     const allocator = new_message.arena.allocator();
 
-    new_message.raw_message = "";
-    new_message.start_line = try original.start_line.clone(allocator);
     for (original.via.items) |via| {
         try new_message.via.append(allocator, try via.clone(allocator));
     }
-    for (original.contact.items) |contact| {
-        try new_message.contact.append(allocator, try contact.clone(allocator));
-    }
-    new_message.allow = try original.allow.clone(allocator);
-    new_message.supported = try original.supported.clone(allocator);
     if (original.from) |from| new_message.from = try from.clone(allocator);
-    if (original.to) |to| new_message.to = try to.clone(allocator);
+    if (original.to) |to| {
+        new_message.to = try to.clone(allocator);
+
+        //TODO This should only be set under some circumnstances, check which, some 100 and >= 200
+        if (new_message.to.?.tag == null) {
+            try new_message.to.?.generateTag(allocator, io);
+        }
+    }
     if (original.call_id) |call_id| new_message.call_id = try allocator.dupe(u8, call_id);
-    if (original.user_agent) |user_agent| new_message.user_agent = try allocator.dupe(u8, user_agent);
-    if (original.accept) |accept| new_message.accept = try allocator.dupe(u8, accept);
-    if (original.record_route) |record_route| new_message.record_route = try record_route.clone(allocator);
-    if (original.server) |server| new_message.server = try allocator.dupe(u8, server);
-    if (original.content_type) |content_type| new_message.content_type = try allocator.dupe(u8, content_type);
-    new_message.body = try allocator.dupe(u8, original.body);
+    if (original.sequence) |seq| new_message.sequence = seq;
 
     return new_message;
 }
@@ -364,7 +365,7 @@ test "sip can correctly parse a SIP REGISTER message" {
     try std.testing.expect(std.mem.eql(u8, message.body, ""));
 }
 
-test "cloned sip messages are not effected when deinitialising the orignal" {
+test "sip messages generated from a request maintains required fields" {
     const message_text = "REGISTER sip:localhost SIP/2.0\r\n" ++
         "Via: SIP/2.0/UDP 172.20.10.4:55595;rport;branch=z9hG4bKPj97wgnQ5d7IM3cfDd2QYcYf9H8hqJLxit\r\n" ++
         "Max-Forwards: 49\r\n" ++
@@ -381,15 +382,15 @@ test "cloned sip messages are not effected when deinitialising the orignal" {
 
     const allocator = std.testing.allocator;
     var message = try Message.parse(allocator, message_text);
-    var new_message = try message.clone(allocator);
+    var new_message = try message.newResponse(allocator, std.testing.io, .ok);
     message.deinit();
 
-    try std.testing.expectEqual(new_message.start_line.request.method, .register);
-    try std.testing.expectEqualStrings(new_message.start_line.request.uri.scheme, "sip");
-    try std.testing.expectEqual(new_message.contact.items[0].expires.?, 0);
-    try std.testing.expectEqual(new_message.max_forwards.?, 49);
+    try std.testing.expectEqual(new_message.start_line.response.status, .ok);
+    try std.testing.expectEqualStrings(new_message.via.items[0].branch, "z9hG4bKPj97wgnQ5d7IM3cfDd2QYcYf9H8hqJLxit");
+    try std.testing.expectEqualStrings(new_message.from.?.tag.?, "Z.hw-WnzbyImNj0P.WWHJW9zhtQc1lm8");
+    try std.testing.expectEqualStrings(new_message.to.?.contact.host, "localhost");
     try std.testing.expectEqualStrings(new_message.call_id.?, "xGAGzEIoe5SHqQnmK5W2jWsIF7kThRbn");
-    try std.testing.expectEqual(new_message.expires.?, 300);
+    try std.testing.expectEqual(new_message.sequence.?.number, 37838);
     try std.testing.expect(std.mem.eql(u8, new_message.body, ""));
     new_message.deinit();
 }
