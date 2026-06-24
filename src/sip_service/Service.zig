@@ -1,4 +1,5 @@
 const std = @import("std");
+const util = @import("util.zig");
 const headers = @import("../sip/headers.zig");
 const Registration = @import("Registration.zig");
 const Message = @import("../sip/Message.zig");
@@ -15,20 +16,19 @@ pub const ServiceError = error{
 
 gpa: std.mem.Allocator,
 io: std.Io,
-transactions: std.StringHashMap(Transaction),
-registrations: std.StringHashMap(Registration),
+transactions: util.Bucket(Transaction),
+registrations: util.Bucket(Registration),
 
 pub fn init(gpa: std.mem.Allocator, io: std.Io) !Service {
     return Service{
         .gpa = gpa,
         .io = io,
-        .transactions = .init(gpa),
-        .registrations = .init(gpa),
+        .transactions = .init(gpa, io),
+        .registrations = .init(gpa, io),
     };
 }
 
 pub fn deinit(service: *Service) void {
-    // TODO free keys
     service.transactions.deinit();
     service.registrations.deinit();
 }
@@ -75,9 +75,9 @@ pub fn readMessages(service: *Service, stream: std.Io.net.Stream) !void {
         var message = try Message.readMessage(service.gpa, &reader.interface, message_buffer);
         defer message.deinit();
 
-        const branch = try message.branch(); // TODO the underlying key gets freed after the message is handled. memory bug
+        const branch = try message.branch();
 
-        if (service.transactions.get(branch)) |transaction| {
+        if (try service.transactions.get(branch)) |transaction| {
             std.debug.print("existing transaction {s}\n", .{branch});
             try service.handleMessage(transaction, message);
             continue;
@@ -114,7 +114,7 @@ pub fn handleMessage(service: *Service, transaction: Transaction, message: Messa
     // If the transaction is complete we can stop tracking it, otherwise update it
     const branch = try message.branch();
     if (new_state == .terminated) {
-        _ = service.transactions.remove(branch);
+        _ = try service.transactions.remove(branch);
     } else {
         try service.transactions.put(branch, .{
             .method = transaction.method,

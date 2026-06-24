@@ -25,10 +25,11 @@ pub fn handleRegister(transaction: Transaction, service: *Service, message: Mess
 
     //TODO handle expires = 0 (logout)
 
-    if (service.registrations.getPtr(id)) |registration| {
+    if (try service.registrations.getPtr(id)) |tx| {
+        defer tx.deinit();
         defer service.gpa.free(id);
-        registration.registered_at = .now(service.io, .real);
-        registration.expires = expires;
+        tx.value.registered_at = .now(service.io, .real);
+        tx.value.expires = expires;
 
         //TODO send response
     } else {
