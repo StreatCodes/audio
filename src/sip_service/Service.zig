@@ -45,19 +45,21 @@ pub fn start(service: *Service, listen_address: []const u8, listen_port: u16) !v
         std.debug.print("New connection {}\n", .{stream.socket.address});
 
         //TODO not sure if this is ok to fire and forget
-        _ = service.io.async(handleConn, .{ service, stream });
+        // _ = service.io.async(handleConn, .{ service, stream });
+        try handleConn(service, stream);
     }
 }
 
 pub fn handleConn(service: *Service, stream: std.Io.net.Stream) !void {
     defer stream.close(service.io);
-    service.readMessages(stream) catch |err| {
-        switch (err) {
-            else => {
-                std.debug.print("Error reading message {}\n", .{err});
-            },
-        }
-    };
+    // service.readMessages(stream) catch |err| {
+    //     switch (err) {
+    //         else => {
+    //             std.debug.print("Error reading message {}\n", .{err});
+    //         },
+    //     }
+    // };
+    try service.readMessages(stream);
 
     std.debug.print("Connection closed {}\n", .{stream.socket.address});
 }

@@ -21,13 +21,14 @@ stream: std.Io.net.Stream,
 pub fn send(transaction: Transaction, allocator: std.mem.Allocator, io: std.Io, message: Message) !void {
     const buffer = try allocator.alloc(u8, 4096);
     defer allocator.free(buffer);
-    var writer = transaction.stream.writer(io, buffer).interface;
+    var writer = transaction.stream.writer(io, buffer);
 
     const data = try message.encode(allocator);
     defer allocator.free(data);
 
-    try writer.writeAll(data);
-    std.debug.print("Sent [{s}]\n", .{data});
+    try writer.interface.writeAll(data);
+    try writer.interface.flush();
+    std.debug.print("Sent ({d}) [{s}]\n", .{ data.len, data });
 }
 
 // TODO Handle AUTH!!
