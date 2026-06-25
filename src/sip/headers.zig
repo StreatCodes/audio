@@ -55,7 +55,7 @@ fn getHeaderParameter(comptime T: type, header_text: []const u8, attribute_name:
         []const u8 => {
             return std.mem.trim(u8, trimmed, "\"");
         },
-        u32, u16 => |t| {
+        u32, u16, u8 => |t| {
             return try fmt.parseInt(t, trimmed, 10);
         },
         f32 => {
@@ -162,7 +162,14 @@ pub const Contact = struct {
     user: []const u8,
     host: []const u8,
     port: ?u16 = null,
+
+    // paramaters
+    transport: ?[]const u8 = null,
     ob: bool = false,
+    lr: bool = false,
+    maddr: ?[]const u8 = null, //Technically an IpAddress
+    ttl: ?u8 = null,
+    user_type: ?[]const u8 = null,
 
     pub fn clone(original: Contact, gpa: std.mem.Allocator) !Contact {
         var new = original;
@@ -187,6 +194,7 @@ pub const Contact = struct {
     /// ["Streats" <sip:streats@192.168.1.130:54216;ob>]
     /// [<sip:streats@localhost>]
     /// [sip:streats@localhost]
+    /// ["Matt" <sip:matt@127.0.0.1:50517;transport=TCP;ob;lr;maddr=239.255.255.1;ttl=16;user=phone>]
     pub fn parse(contact_text: []const u8) !Contact {
         var contact = Contact{
             .protocol = undefined,
@@ -218,10 +226,28 @@ pub const Contact = struct {
 
         const parameter_text = reader.readUntilScalar('>');
         if (parameter_text.len > 0) {
-            //TODO need more robust way of checking boolean parameters
-            //This will fail if more than one params are present
-            if (mem.eql(u8, parameter_text, ";ob")) {
+            if (try getHeaderParameter([]const u8, parameter_text, "transport")) |transport| {
+                contact.transport = transport;
+            }
+
+            if (try getHeaderParameter(bool, parameter_text, "ob") == true) {
                 contact.ob = true;
+            }
+
+            if (try getHeaderParameter(bool, parameter_text, "lr") == true) {
+                contact.lr = true;
+            }
+
+            if (try getHeaderParameter([]const u8, parameter_text, "maddr")) |maddr| {
+                contact.maddr = maddr;
+            }
+
+            if (try getHeaderParameter(u8, parameter_text, "ttl")) |ttl| {
+                contact.ttl = ttl;
+            }
+
+            if (try getHeaderParameter([]const u8, parameter_text, "user")) |user_type| {
+                contact.user_type = user_type;
             }
         }
 
@@ -238,9 +264,14 @@ pub const Contact = struct {
                 try buffer.print(allocator, ":{d}", .{port});
             }
         }
-        if (self.ob) {
-            try buffer.appendSlice(allocator, ";ob");
-        }
+
+        if (self.transport) |transport| try buffer.print(allocator, ";transport={s}", .{transport});
+        if (self.ob) try buffer.print(allocator, ";ob", .{});
+        if (self.lr) try buffer.print(allocator, ";lr", .{});
+        if (self.maddr) |maddr| try buffer.print(allocator, ";maddr={s}", .{maddr});
+        if (self.ttl) |ttl| try buffer.print(allocator, ";ttl={d}", .{ttl});
+        if (self.user_type) |user_type| try buffer.print(allocator, ";user={s}", .{user_type});
+
         _ = try buffer.append(allocator, '>');
     }
 };
@@ -916,6 +947,31 @@ test "Contact header parses and encodes all standardised paramaters" {
     const expected_text = "\"Matt\" <sip:matt@127.0.0.1:50517>;" ++
         "expires=300;reg-id=1;q=0.9;methods=\"INVITE,ACK,BYE,CANCEL,OPTIONS\";" ++
         "+sip.instance=\"<urn:uuid:00000000-0000-0000-0000-0000b88b7722>\";+sip.audio;+sip.video\r\n";
+
+    try testing.expectEqualStrings(expected_text, encoded);
+}
+
+test "Contact parses and encodes all standardised paramaters" {
+    const contact_text = "\"Matt\" <sip:matt@127.0.0.1:50517;transport=TCP;ob;lr;maddr=239.255.255.1;ttl=16;user=phone>";
+
+    const contact = try Contact.parse(contact_text);
+    try testing.expectEqualStrings("Matt", contact.name.?);
+    try testing.expectEqual(.sip, contact.protocol);
+    try testing.expectEqualStrings("matt", contact.user);
+    try testing.expectEqual(50517, contact.port.?);
+    try testing.expectEqualStrings("TCP", contact.transport.?);
+    try testing.expectEqual(true, contact.ob);
+    try testing.expectEqual(true, contact.lr);
+    try testing.expectEqualStrings("239.255.255.1", contact.maddr.?);
+    try testing.expectEqual(16, contact.ttl.?);
+    try testing.expectEqualStrings("phone", contact.user_type.?);
+
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(testing.allocator);
+    try contact.encode(testing.allocator, &buffer);
+    const encoded = buffer.items;
+
+    const expected_text = "\"Matt\" <sip:matt@127.0.0.1:50517;transport=TCP;ob;lr;maddr=239.255.255.1;ttl=16;user=phone>";
 
     try testing.expectEqualStrings(expected_text, encoded);
 }
