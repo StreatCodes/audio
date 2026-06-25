@@ -29,10 +29,10 @@ fn getHeaderValue(header_text: []const u8) []const u8 {
 }
 
 //TODO does not handle escaped semicolons (\;)
-fn getHeaderParameter(header_text: []const u8, attribute_name: []const u8) !?[]const u8 {
+fn getHeaderParameter(comptime T: type, header_text: []const u8, attribute_name: []const u8) !?T {
     if (attribute_name.len > 126) return HeaderError.InvalidHeader;
     var buf: [128]u8 = undefined;
-    const needle = try std.fmt.bufPrint(&buf, ";{s}=", .{attribute_name});
+    const needle = try std.fmt.bufPrint(&buf, ";{s}", .{attribute_name});
 
     const _start = std.mem.indexOf(u8, header_text, needle) orelse return null;
     const start = _start + needle.len;
@@ -41,7 +41,30 @@ fn getHeaderParameter(header_text: []const u8, attribute_name: []const u8) !?[]c
     if (std.mem.indexOfScalar(u8, remainder, ';')) |end| {
         remainder = remainder[0..end];
     }
-    return std.mem.trim(u8, remainder, " \n");
+    var trimmed = std.mem.trim(u8, remainder, " \n");
+
+    // booleans don't include '='
+    if (T == bool) {
+        return trimmed.len == 0;
+    }
+
+    if (trimmed.len == 0) return null;
+    trimmed = trimmed[1..]; // remove '='
+
+    switch (T) {
+        []const u8 => {
+            return std.mem.trim(u8, trimmed, "\"");
+        },
+        u32, u16 => |t| {
+            return try fmt.parseInt(t, trimmed, 10);
+        },
+        f32 => {
+            return try fmt.parseFloat(f32, trimmed);
+        },
+        else => {
+            @compileError("unsupported type: " ++ @typeName(T));
+        },
+    }
 }
 
 const ContactProtocol = enum {
@@ -60,13 +83,22 @@ const ContactProtocol = enum {
     }
 };
 
+// Contact: "Matt" <sip:matt@127.0.0.1:50517;transport=TCP;ob>;reg-id=1;+sip.instance="<urn:uuid:00000000-0000-0000-0000-0000b88b7722>";expires=300;q=0.9;methods="INVITE,ACK,BYE,CANCEL,OPTIONS";+sip.audio;+sip.video
 pub const ContactHeader = struct {
     contact: Contact,
-    expires: ?u32,
+    expires: ?u32 = null,
+    reg_id: ?u32 = null,
+    q: ?f32 = null,
+    methods: ?[]const u8 = null, // TODO technically an array of methods
+    sip_instance: ?[]const u8 = null,
+    sip_audio: bool = false,
+    sip_video: bool = false,
 
     pub fn clone(original: ContactHeader, gpa: std.mem.Allocator) !ContactHeader {
         var new = original;
         new.contact = try original.contact.clone(gpa);
+        new.methods = try gpa.dupe(u8, original.methods);
+        new.sip_instance = try gpa.dupe(u8, original.sip_instance);
 
         return new;
     }
@@ -75,11 +107,34 @@ pub const ContactHeader = struct {
         const header_value = getHeaderValue(header_text);
         var contact_header = ContactHeader{
             .contact = try Contact.parse(header_value),
-            .expires = undefined,
         };
 
-        if (try getHeaderParameter(header_text, "expires")) |expires_text| {
-            contact_header.expires = try fmt.parseInt(u32, expires_text, 10);
+        if (try getHeaderParameter(u32, header_text, "expires")) |expires_text| {
+            contact_header.expires = expires_text;
+        }
+
+        if (try getHeaderParameter(u32, header_text, "reg-id")) |reg_id| {
+            contact_header.reg_id = reg_id;
+        }
+
+        if (try getHeaderParameter(f32, header_text, "q")) |q| {
+            contact_header.q = q;
+        }
+
+        if (try getHeaderParameter([]const u8, header_text, "methods")) |methods| {
+            contact_header.methods = methods;
+        }
+
+        if (try getHeaderParameter([]const u8, header_text, "+sip.instance")) |sip_instance| {
+            contact_header.sip_instance = sip_instance;
+        }
+
+        if (try getHeaderParameter(bool, header_text, "+sip.audio") == true) {
+            contact_header.sip_audio = true;
+        }
+
+        if (try getHeaderParameter(bool, header_text, "+sip.video") == true) {
+            contact_header.sip_video = true;
         }
 
         return contact_header;
@@ -89,6 +144,13 @@ pub const ContactHeader = struct {
     pub fn encode(self: ContactHeader, allocator: std.mem.Allocator, buffer: *std.ArrayList(u8)) !void {
         try self.contact.encode(allocator, buffer);
         if (self.expires) |expires| try buffer.print(allocator, ";expires={d}", .{expires});
+        if (self.reg_id) |reg_id| try buffer.print(allocator, ";reg-id={d}", .{reg_id});
+        if (self.q) |q| try buffer.print(allocator, ";q={d}", .{q});
+        if (self.methods) |methods| try buffer.print(allocator, ";methods=\"{s}\"", .{methods});
+        if (self.sip_instance) |sip_instance| try buffer.print(allocator, ";+sip.instance=\"{s}\"", .{sip_instance});
+        if (self.sip_audio) try buffer.print(allocator, ";+sip.audio", .{});
+        if (self.sip_video) try buffer.print(allocator, ";+sip.video", .{});
+
         try buffer.appendSlice(allocator, "\r\n");
     }
 };
@@ -358,20 +420,20 @@ pub const ViaHeader = struct {
 
         //get attributes
         const magic_cookie = "z9hG4bK";
-        via_header.branch = try getHeaderParameter(header_text, "branch") orelse return HeaderError.InvalidHeader;
+        via_header.branch = try getHeaderParameter([]const u8, header_text, "branch") orelse return HeaderError.InvalidHeader;
         if (!std.mem.startsWith(u8, via_header.branch, magic_cookie)) return HeaderError.InvalidHeader;
 
-        if (try getHeaderParameter(header_text, "rport")) |rport| {
-            via_header.rport = try std.fmt.parseInt(u16, rport, 10);
+        if (try getHeaderParameter(u16, header_text, "rport")) |rport| {
+            via_header.rport = rport;
         }
 
-        if (try getHeaderParameter(header_text, "ttl")) |ttl| {
-            via_header.ttl = try std.fmt.parseInt(u32, ttl, 10);
+        if (try getHeaderParameter(u32, header_text, "ttl")) |ttl| {
+            via_header.ttl = ttl;
         }
 
-        via_header.received = try getHeaderParameter(header_text, "received");
-        via_header.maddr = try getHeaderParameter(header_text, "maddr");
-        via_header.sent_by = try getHeaderParameter(header_text, "sent_by");
+        via_header.received = try getHeaderParameter([]const u8, header_text, "received");
+        via_header.maddr = try getHeaderParameter([]const u8, header_text, "maddr");
+        via_header.sent_by = try getHeaderParameter([]const u8, header_text, "sent_by");
 
         return via_header;
     }
@@ -462,7 +524,7 @@ pub const FromHeader = struct {
 
         return FromHeader{
             .contact = try Contact.parse(contact_text),
-            .tag = try getHeaderParameter(header_text, "tag"),
+            .tag = try getHeaderParameter([]const u8, header_text, "tag"),
         };
     }
 
@@ -502,7 +564,7 @@ pub const RecordRoute = struct {
             header_text = header_text[4..];
         }
         const uri = getHeaderValue(header_text);
-        const lr = try getHeaderParameter(header_text, "lr") != null;
+        const lr = try getHeaderParameter(bool, header_text, "lr") == true;
 
         return RecordRoute{
             .address = try Address.parse(uri),
@@ -830,4 +892,30 @@ test "Generate tag populates the tag on a To/From header" {
     defer testing.allocator.free(from.tag.?);
 
     try testing.expectEqual(from.tag.?.len, 40);
+}
+
+test "Contact header parses and encodes all standardised paramaters" {
+    const header_text = "\"Matt\" <sip:matt@127.0.0.1:50517>;" ++
+        "reg-id=1;+sip.instance=\"<urn:uuid:00000000-0000-0000-0000-0000b88b7722>\";expires=300;q=0.9;" ++
+        "methods=\"INVITE,ACK,BYE,CANCEL,OPTIONS\";+sip.audio;+sip.video";
+
+    const contact_header = try ContactHeader.parse(header_text);
+    try testing.expectEqual(1, contact_header.reg_id.?);
+    try testing.expectEqualStrings("<urn:uuid:00000000-0000-0000-0000-0000b88b7722>", contact_header.sip_instance.?);
+    try testing.expectEqual(300, contact_header.expires.?);
+    try testing.expectEqual(0.9, contact_header.q.?);
+    try testing.expectEqualStrings("INVITE,ACK,BYE,CANCEL,OPTIONS", contact_header.methods.?);
+    try testing.expectEqual(true, contact_header.sip_audio);
+    try testing.expectEqual(true, contact_header.sip_video);
+
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(testing.allocator);
+    try contact_header.encode(testing.allocator, &buffer);
+    const encoded = buffer.items;
+
+    const expected_text = "\"Matt\" <sip:matt@127.0.0.1:50517>;" ++
+        "expires=300;reg-id=1;q=0.9;methods=\"INVITE,ACK,BYE,CANCEL,OPTIONS\";" ++
+        "+sip.instance=\"<urn:uuid:00000000-0000-0000-0000-0000b88b7722>\";+sip.audio;+sip.video\r\n";
+
+    try testing.expectEqualStrings(expected_text, encoded);
 }
